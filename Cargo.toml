@@ -1,0 +1,25 @@
+[package]
+name = "hsf-core"
+version = "0.1.0-alpha.1"
+edition = "2024"
+rust-version = "1.88"
+description = "Bounded, independent HSF syntax and generic scene reader"
+publish = ["crates-io"]
+license = "Apache-2.0"
+readme = "README.md"
+repository = "https://github.com/monozukuri-ai/hsf-core"
+keywords = ["hsf", "cad", "parser", "geometry", "3d"]
+categories = ["parser-implementations", "graphics"]
+exclude = ["/.internal/**"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+sha2 = "0.10"
+
+[build-dependencies]
+sha2 = "0.10"
+
+[lints.rust]
+unsafe_code = "forbid"
+
