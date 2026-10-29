@@ -1,6 +1,6 @@
 //! A deliberately bounded generic scene profile, independent of CAD products.
 use crate::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 mod text_settings;
 pub use text_settings::*;
 mod glyph;
@@ -54,6 +54,16 @@ pub struct SceneOptions {
     /// Separate authorization for a final opaque User Data record before z/0.
     /// Requires the first inventory record and never enables placements.
     pub inventory_terminal_user_data_record: Option<String>,
+    /// Absolute runtime segment path at which the producer mounted this file's
+    /// root. Relative paths that climb above the file root continue through the
+    /// mount's ancestors: results inside the mount map back to file paths and
+    /// results outside it are external and never modeled. None keeps the file
+    /// root as the only root, so root-escaping paths stay unsupported.
+    pub mount_path: Option<String>,
+    /// Verified (default) withholds every placement while unresolved state could
+    /// change the arrangement. BestEffort traverses anyway in partial mode and
+    /// labels the result an estimate; strict mode rejects it.
+    pub placement: PlacementPolicy,
 }
 impl Default for SceneOptions {
     fn default() -> Self {
@@ -71,8 +81,21 @@ impl Default for SceneOptions {
             max_definitions: 10_000,
             inventory_user_data_record: None,
             inventory_terminal_user_data_record: None,
+            mount_path: None,
+            placement: PlacementPolicy::Verified,
         }
     }
+}
+/// How unresolved global state affects instance placement.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlacementPolicy {
+    /// Placements are withheld whenever unresolved state could change them.
+    #[default]
+    Verified,
+    /// Placements are computed from the stored tree, matrices and references and
+    /// reported as estimates (`hsf.placement_estimated`). Partial mode only.
+    BestEffort,
 }
 
 /// Stored all-vertex normals in local coordinates. No normalization or transform.
@@ -274,6 +297,14 @@ struct Link {
     object: Object,
     reference: Option<usize>,
 }
+/// An in-place Repeat Object whose source placeholder may be bound later.
+struct PendingInstance {
+    to: usize,
+    from: usize,
+    transform: Matrix,
+    source: SourceSpan,
+    opcode: u8,
+}
 
 fn fail(r: &Record, code: &str, status: Status, message: &str) -> HsfError {
     let mut e = error(code, status, message);
@@ -355,6 +386,15 @@ pub fn scene(
             })),
         });
     }
+    if options.mode == ParseMode::Strict && options.placement == PlacementPolicy::BestEffort {
+        let mut e = error(
+            "hsf.placement_policy_rejected",
+            Status::Unsupported,
+            "Best-effort placement is a partial-mode estimate; strict mode only accepts verified placements",
+        );
+        e.diagnostic.stage = "scene".into();
+        return Err(e);
+    }
     let mut b = Builder {
         doc: &parsed.data,
         options,
@@ -395,6 +435,9 @@ pub fn scene(
         node_depths: vec![],
         tags: HashMap::new(),
         null_meshes: HashMap::new(),
+        mount: None,
+        pending_instances: vec![],
+        include_targets: HashSet::new(),
         refinement_parameters: HashMap::new(),
         full_mesh_count: 0,
         refinement_count: 0,
@@ -415,6 +458,7 @@ pub fn scene(
     b.paths.insert("/".into(), 0);
     b.node_paths[0] = Some("/".into());
     b.initialize_context()?;
+    b.initialize_mount()?;
     for r in &parsed.data.records {
         if let Err(mut e) = b.record(r) {
             if e.diagnostic.stage == "hsf_header" {
@@ -436,7 +480,15 @@ pub fn scene(
                 b.resolve_glyphs(false)?;
                 b.resolve_line_patterns(false)?;
                 b.resolve_styles(false)?;
+                let stopped = e.diagnostic.source.clone();
                 b.diagnostics.push(*e.diagnostic);
+                if options.placement == PlacementPolicy::BestEffort {
+                    b.resolve_instances()?;
+                    let mut reasons = b.withholding_reasons();
+                    reasons.push("stopped_at_unsupported_record");
+                    b.estimate_placements(&reasons, stopped.as_ref())?;
+                    return Ok(b.outcome(parsed, true));
+                }
                 return Ok(b.outcome(parsed, false));
             }
             return Err(e);
@@ -448,31 +500,15 @@ pub fn scene(
     b.resolve_glyphs(parsed.unparsed.is_empty())?;
     b.resolve_line_patterns(parsed.unparsed.is_empty())?;
     b.resolve_styles(parsed.unparsed.is_empty())?;
-    if !b.data.opaque_user_data.is_empty()
-        || b.unresolved_refinement
-        || b.data
-            .glyphs
-            .iter()
-            .any(|g| g.interpretation_status != Status::Complete)
-        || b.data
-            .line_styles
-            .iter()
-            .any(|d| d.interpretation_status != Status::Complete)
-        || b.data
-            .rendering_options
-            .iter()
-            .any(|x| x.interpretation_status != Status::Complete)
-        || !b.data.textures.is_empty()
-        || !b.data.images.is_empty()
-        || b.data.import_context.is_some()
-        || !b.data.segment_aliases.is_empty()
-        || b.data
-            .style_resolutions
-            .iter()
-            .any(|s| s.status != Status::Complete)
-    {
+    b.resolve_instances()?;
+    let reasons = b.withholding_reasons();
+    if !reasons.is_empty() {
         // Inventoried definitions retain local bytes. Unknown application state
         // cannot be asserted as a world placement, even with a complete suffix.
+        if options.placement == PlacementPolicy::BestEffort {
+            b.estimate_placements(&reasons, None)?;
+            return Ok(b.outcome(parsed, true));
+        }
         return Ok(b.outcome(parsed, false));
     }
     b.traverse().map_err(|mut e| {
@@ -498,7 +534,10 @@ struct Builder<'a> {
     tags: HashMap<u32, Object>,
     // A target remains a stable NullShell object for tags and references.
     // None records a conflicting repeated refinement and never permits rebinding.
-    null_meshes: HashMap<usize, Option<usize>>,
+    null_meshes: HashMap<usize, Option<(usize, Matrix)>>,
+    mount: Option<Vec<String>>,
+    pending_instances: Vec<PendingInstance>,
+    include_targets: HashSet<usize>,
     refinement_parameters: HashMap<usize, usize>,
     full_mesh_count: usize,
     refinement_count: usize,
@@ -880,14 +919,25 @@ impl Builder<'_> {
                 let path = if name.is_empty() {
                     None
                 } else {
-                    Some(self.segment_path(n, &name, r)?.ok_or_else(|| {
-                        fail(
-                            r,
-                            "hsf.segment_path",
-                            Status::Unsupported,
-                            "Segment path is outside the supported literal path profile",
-                        )
-                    })?)
+                    Some(match self.segment_path(n, &name, r)? {
+                        Some(ResolvedPath::Internal(p)) => p,
+                        Some(ResolvedPath::External(_)) => {
+                            return Err(fail(
+                                r,
+                                "hsf.segment_path_external",
+                                Status::Unsupported,
+                                "Segment path leaves the file root mounted at the configured mount path; external segments are not modeled",
+                            ));
+                        }
+                        None => {
+                            return Err(fail(
+                                r,
+                                "hsf.segment_path",
+                                Status::Unsupported,
+                                "Segment path is outside the supported literal path profile",
+                            ));
+                        }
+                    })
                 };
                 let next = if let Some(i) = path.as_ref().and_then(|p| self.paths.get(p)) {
                     *i
@@ -1214,6 +1264,8 @@ impl Builder<'_> {
                     let i = self.data.null_shells.len();
                     self.data.null_shells.push(NullShell {
                         mesh_id: None,
+                        instance_of: None,
+                        instance_transform: None,
                         id: format!("null_shell:{i}"),
                         node_id: self.data.nodes[n].id.clone(),
                         source_record_id: r.id.clone(),
@@ -1284,17 +1336,35 @@ impl Builder<'_> {
                 self.last = Some(object);
             }
             b'r' | b'<' => {
+                let mut external = false;
                 let target = if r.opcode == b'r' {
                     self.tags.get(&r.value.expect("index")).cloned()
                 } else if r.condition.is_none() {
                     let name = self.name(r)?.to_owned();
-                    self.segment_path(n, &name, r)?
-                        .and_then(|p| self.paths.get(&p).copied())
-                        .map(Object::Node)
+                    match self.segment_path(n, &name, r)? {
+                        Some(ResolvedPath::Internal(p)) => {
+                            self.paths.get(&p).copied().map(Object::Node)
+                        }
+                        Some(ResolvedPath::External(_)) => {
+                            external = true;
+                            None
+                        }
+                        None => None,
+                    }
                 } else {
                     None
                 };
-                if target.is_none() {
+                if let Some(Object::Node(t)) = &target {
+                    self.budget.charge_output(64)?;
+                    self.include_targets.insert(*t);
+                }
+                if external {
+                    self.issue(
+                        r,
+                        "hsf.reference_external",
+                        "Include target lies outside the file root mounted at the configured mount path; its branch is omitted",
+                    )?;
+                } else if target.is_none() {
                     self.issue(
                         r,
                         "hsf.unresolved_reference",
@@ -1314,22 +1384,69 @@ impl Builder<'_> {
                     .chunks_exact(4)
                     .map(|b| i32::from_le_bytes(b.try_into().expect("four")))
                     .collect();
+                let options = bytes[16];
                 let transform = matrix(&bytes[17..])?;
-                if ints[0] < 0 || ints[1] != 0 || ints[2] != -1 || ints[3] != 0 || bytes[16] != 0 {
+                // TK_Instance order: source index/variant, destination index/variant,
+                // options. Only variant 0 and the tristrip option bit (0x01) are known.
+                if ints[0] < 0 || ints[1] != 0 || ints[2] < -1 || ints[3] != 0 || options & !1 != 0
+                {
                     self.issue(
                         r,
                         "hsf.repeat_variant",
-                        "Only default geometry variants creating a new object are supported",
+                        "Only default geometry variants with known options are supported",
                     )?;
                     self.reference(n, r, None, Some(transform))?;
                     return Ok(());
                 }
-                let target = match self.tags.get(&(ints[0] as u32)) {
+                let source = self.tags.get(&(ints[0] as u32)).cloned();
+                if ints[2] >= 0 {
+                    // The destination is an existing tagged Null Shell placeholder
+                    // that becomes an in-place instance of the source placeholder's
+                    // bound geometry. It stays in its own segment; no link is added.
+                    let destination = self.tags.get(&(ints[2] as u32)).cloned();
+                    match (source, destination) {
+                        (Some(Object::NullShell(from)), Some(Object::NullShell(to)))
+                            if from != to =>
+                        {
+                            self.budget.charge_output(1024)?;
+                            let i = self.data.references.len();
+                            self.data.references.push(Reference {
+                                id: format!("reference:{i}"),
+                                node_id: self.data.null_shells[to].node_id.clone(),
+                                target_id: Some(self.data.null_shells[from].id.clone()),
+                                source: r.source.clone(),
+                                kind: r.kind.clone(),
+                                transform: Some(transform),
+                            });
+                            self.data.null_shells[to].instance_of =
+                                Some(self.data.null_shells[from].id.clone());
+                            self.data.null_shells[to].instance_transform = Some(transform);
+                            self.pending_instances.push(PendingInstance {
+                                to,
+                                from,
+                                transform,
+                                source: r.source.clone(),
+                                opcode: r.opcode,
+                            });
+                            self.last = Some(Object::NullShell(to));
+                        }
+                        _ => {
+                            self.issue(
+                                r,
+                                "hsf.repeat_target",
+                                "Repeat destination must be a previously tagged Null Shell distinct from a tagged Null Shell source",
+                            )?;
+                            self.reference(n, r, None, Some(transform))?;
+                        }
+                    }
+                    return Ok(());
+                }
+                let target = match source {
                     Some(Object::Mesh(i, from)) => {
-                        Some(Object::Mesh(*i, multiply(*from, transform)?))
+                        Some(Object::Mesh(i, multiply(from, transform)?))
                     }
                     Some(Object::Primitive(i, from)) => {
-                        Some(Object::Primitive(*i, multiply(*from, transform)?))
+                        Some(Object::Primitive(i, multiply(from, transform)?))
                     }
                     _ => None,
                 };
@@ -1347,6 +1464,226 @@ impl Builder<'_> {
             _ => {}
         }
         Ok(())
+    }
+    fn initialize_mount(&mut self) -> Result<(), HsfError> {
+        let Some(requested) = &self.options.mount_path else {
+            return Ok(());
+        };
+        let invalid = || {
+            let mut e = error(
+                "hsf.invalid_mount_path",
+                Status::Invalid,
+                "Mount path must be an absolute unquoted ASCII literal path of at most 4096 bytes; empty or navigation components, aliases and wildcards are forbidden",
+            );
+            e.diagnostic.stage = "scene".into();
+            e
+        };
+        if requested.len() > 4096
+            || !requested.starts_with('/')
+            || requested
+                .bytes()
+                .any(|b| !(b.is_ascii_alphanumeric() || b" /#+-$_ .".contains(&b)))
+        {
+            return Err(invalid());
+        }
+        self.budget
+            .charge_output(1024 + requested.len() as u64 * 4)?;
+        let components: Vec<String> = if requested == "/" {
+            vec![]
+        } else {
+            requested[1..]
+                .split('/')
+                .map(|s| {
+                    s.split(' ')
+                        .filter(|s| !s.is_empty())
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                        .to_ascii_lowercase()
+                })
+                .collect()
+        };
+        if components
+            .iter()
+            .any(|s| matches!(s.as_str(), "" | "." | ".." | "..." | "...."))
+        {
+            return Err(invalid());
+        }
+        self.mount = Some(components);
+        Ok(())
+    }
+    fn instance_diagnostic(
+        &mut self,
+        p: &PendingInstance,
+        code: &str,
+        message: &str,
+    ) -> Result<(), HsfError> {
+        let mut e = error(code, Status::Unsupported, message);
+        e.diagnostic.stage = "scene".into();
+        e.diagnostic.source = Some(p.source.clone());
+        e.diagnostic.opcode = Some(p.opcode);
+        e.diagnostic.version = Some(self.doc.header.version.text.clone());
+        e.diagnostic.impact =
+            Some("Scene is incomplete; unsupported geometry or placement is not fabricated".into());
+        if self.options.mode == ParseMode::Strict {
+            return Err(e);
+        }
+        self.budget.charge_output(512)?;
+        self.diagnostics.push(*e.diagnostic);
+        Ok(())
+    }
+    /// Bind in-place Repeat Object instances once their source placeholders have
+    /// geometry. Sources may be refined after the instance record, so iterate.
+    fn resolve_instances(&mut self) -> Result<(), HsfError> {
+        let mut pending = std::mem::take(&mut self.pending_instances);
+        let mut progress = true;
+        while progress && !pending.is_empty() {
+            progress = false;
+            let mut remaining = Vec::with_capacity(pending.len());
+            for p in pending {
+                match self.null_meshes.get(&p.from).copied() {
+                    Some(Some((mesh, local))) => {
+                        progress = true;
+                        let composed = multiply(local, p.transform)?;
+                        if self.null_meshes.contains_key(&p.to) {
+                            // A placeholder with its own update or a second instance
+                            // assignment is ambiguous; no winner is selected.
+                            self.unresolved_refinement = true;
+                            self.null_meshes.insert(p.to, None);
+                            self.data.null_shells[p.to].mesh_id = None;
+                            self.instance_diagnostic(
+                                &p,
+                                "hsf.repeat_target_bound",
+                                "Repeat destination already has geometry; its binding is revoked",
+                            )?;
+                        } else {
+                            self.budget.charge_output(512)?;
+                            self.null_meshes.insert(p.to, Some((mesh, composed)));
+                            self.data.null_shells[p.to].mesh_id =
+                                Some(self.data.meshes[mesh].id.clone());
+                        }
+                    }
+                    Some(None) => {
+                        progress = true;
+                        self.unresolved_refinement = true;
+                        self.instance_diagnostic(&p, "hsf.repeat_source_unbound", "Repeat source Null Shell has no usable geometry; the instance has none")?;
+                    }
+                    None => remaining.push(p),
+                }
+            }
+            pending = remaining;
+        }
+        for p in pending {
+            self.unresolved_refinement = true;
+            self.instance_diagnostic(
+                &p,
+                "hsf.repeat_source_unbound",
+                "Repeat source Null Shell has no usable geometry; the instance has none",
+            )?;
+        }
+        Ok(())
+    }
+    /// State that keeps verified placements from being asserted.
+    fn withholding_reasons(&self) -> Vec<&'static str> {
+        let mut reasons = vec![];
+        if !self.data.opaque_user_data.is_empty() {
+            reasons.push("opaque_user_data");
+        }
+        if self.unresolved_refinement {
+            reasons.push("unresolved_refinement");
+        }
+        if self
+            .data
+            .glyphs
+            .iter()
+            .any(|g| g.interpretation_status != Status::Complete)
+        {
+            reasons.push("glyph_definitions");
+        }
+        if self
+            .data
+            .line_styles
+            .iter()
+            .any(|d| d.interpretation_status != Status::Complete)
+        {
+            reasons.push("line_style_definitions");
+        }
+        if self
+            .data
+            .rendering_options
+            .iter()
+            .any(|x| x.interpretation_status != Status::Complete)
+        {
+            reasons.push("rendering_options");
+        }
+        if !self.data.textures.is_empty() {
+            reasons.push("textures");
+        }
+        if !self.data.images.is_empty() {
+            reasons.push("images");
+        }
+        if self.data.import_context.is_some() {
+            reasons.push("import_context");
+        }
+        if !self.data.segment_aliases.is_empty() {
+            reasons.push("segment_aliases");
+        }
+        if self
+            .data
+            .style_resolutions
+            .iter()
+            .any(|s| s.status != Status::Complete)
+        {
+            reasons.push("style_resolutions");
+        }
+        reasons
+    }
+    /// Segments inside the standard Include Library are definitions: when they
+    /// are include targets they render only through their includes, never at
+    /// their own tree position. The mount path supplies the runtime location of
+    /// the file root, so a mounted file's library segments are recognized too.
+    fn library_definition(&self, n: usize) -> bool {
+        if !self.include_targets.contains(&n) {
+            return false;
+        }
+        let Some(path) = &self.node_paths[n] else {
+            return false;
+        };
+        let under = |p: &str| p == "/include library" || p.starts_with("/include library/");
+        if under(path) {
+            return true;
+        }
+        match &self.mount {
+            Some(mount) => {
+                let suffix = if path == "/" { "" } else { path.as_str() };
+                under(&format!("/{}{}", mount.join("/"), suffix))
+            }
+            None => false,
+        }
+    }
+    /// Best-effort placement: record the estimate and traverse anyway.
+    fn estimate_placements(
+        &mut self,
+        reasons: &[&str],
+        stopped: Option<&SourceSpan>,
+    ) -> Result<(), HsfError> {
+        self.budget.charge_output(2048)?;
+        let mut d = error(
+            "hsf.placement_estimated",
+            Status::Partial,
+            &format!(
+                "Placements are estimated from the stored segment tree, modelling matrices and references while unresolved state is ignored: {}",
+                reasons.join(", ")
+            ),
+        );
+        d.diagnostic.severity = "warning".into();
+        d.diagnostic.stage = "scene".into();
+        d.diagnostic.source = stopped.cloned();
+        d.diagnostic.version = Some(self.doc.header.version.text.clone());
+        d.diagnostic.impact = Some(
+            "Instances are best-effort estimates; verify the arrangement against the producing application".into(),
+        );
+        self.diagnostics.push(*d.diagnostic);
+        self.traverse()
     }
     fn traverse(&mut self) -> Result<(), HsfError> {
         #[derive(Clone)]
@@ -1405,7 +1742,7 @@ impl Builder<'_> {
             }
             let object = match link.object {
                 Object::NullShell(i) => match self.null_meshes.get(&i).copied().flatten() {
-                    Some(m) => Object::Mesh(m, IDENTITY),
+                    Some((m, local)) => Object::Mesh(m, local),
                     None => Object::NullShell(i),
                 },
                 other => other,
@@ -1469,6 +1806,9 @@ impl Builder<'_> {
                     });
                 }
                 Object::Node(n) => {
+                    if link.reference.is_none() && self.library_definition(n) {
+                        continue;
+                    }
                     let node = &self.data.nodes[n];
                     let display = self.styled_displays[n]
                         .as_deref()

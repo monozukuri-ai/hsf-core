@@ -7,7 +7,7 @@ crates.io, add:
 
 ```toml
 [dependencies]
-hsf-core = "0.1.0-alpha.1"
+hsf-core = "0.1.0-alpha.2"
 ```
 
 To use a local source checkout before publication or during development, replace
@@ -97,6 +97,8 @@ framing can consume every byte and still return a partial result.
 
 Before using instances, inspect `Scene.placement_status` and diagnostics. Empty
 instance arrays may mean placements were withheld, rather than an empty file.
+`SceneOptions.placement = PlacementPolicy::BestEffort` returns estimated instances
+instead, labeled by `hsf.placement_estimated`; see [Scene data](scene-data.md#placement-policy).
 `HsfError.diagnostic` includes a code, classification, stage and, when available,
 source/opcode/version context. Other result objects expose their own decoding,
 association or interpretation status; a complete association does not establish

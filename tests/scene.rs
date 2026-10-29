@@ -377,3 +377,241 @@ fn acyclic_reference_expansion_is_bounded_even_without_geometry() {
         );
     }
 }
+
+fn read_with(body: &[u8], options: SceneOptions) -> Result<ParseOutcome<Scene>, HsfError> {
+    let mut budget = Budget::new(Limits::default());
+    let parsed = parse(
+        &file(body),
+        &ParseOptions {
+            mode: options.mode,
+            ..Default::default()
+        },
+        &mut budget,
+    )?;
+    scene(&parsed, &options, &mut budget)
+}
+/// LOD 0 Null Shell placeholder.
+fn null_shell() -> Vec<u8> {
+    b"S\x96\x02\0\0".to_vec()
+}
+/// LOD 0 refinement of tag `index` with 8-bit faces and no optional attributes.
+fn refinement(index: u32, points: &[[f32; 3]], faces: &[i32]) -> Vec<u8> {
+    let mut b = vec![b'S', 0];
+    b.extend(index.to_le_bytes());
+    b.push(0);
+    b.extend((points.len() as i32).to_le_bytes());
+    for p in points {
+        for v in p {
+            b.extend(v.to_le_bytes());
+        }
+    }
+    b.push(1);
+    b.extend((1 + faces.len() as i32).to_le_bytes());
+    b.push(8);
+    b.extend(faces.iter().map(|f| *f as u8));
+    b
+}
+/// TK_Instance operands: source index/variant, destination index/variant, options.
+fn instance(from: [i32; 2], to: [i32; 2], options: u8, translation: [f32; 3]) -> Vec<u8> {
+    let mut b = vec![b'&'];
+    for n in [from[0], from[1], to[0], to[1]] {
+        b.extend(n.to_le_bytes());
+    }
+    b.push(options);
+    let [x, y, z] = translation;
+    b.extend(&transform([1., 0., 0., 0., 1., 0., 0., 0., 1., x, y, z])[1..]);
+    b
+}
+#[test]
+fn repeat_objects_instance_tagged_null_shells_in_place() {
+    // Two placeholders in one segment; the second becomes an instance of the first
+    // (tristrip option set). The source may receive its geometry before or after.
+    for geometry_first in [false, true] {
+        let mut body = b"(\x01s".to_vec();
+        body.extend(null_shell());
+        body.extend(b"q");
+        body.extend(null_shell());
+        body.extend(b"q");
+        if geometry_first {
+            body.extend(refinement(0, &QUAD, &[3, 0, 1, 2]));
+        }
+        body.extend(instance([0, 0], [1, 0], 1, [7., 8., 9.]));
+        if !geometry_first {
+            body.extend(refinement(0, &QUAD, &[3, 0, 1, 2]));
+        }
+        body.extend(b")");
+        let s = read(&body, ParseMode::Strict).unwrap();
+        assert_eq!(s.status, Status::Complete);
+        assert_eq!(s.data.meshes.len(), 1);
+        assert_eq!(s.data.null_shells.len(), 2);
+        let mesh = s.data.meshes[0].id.as_str();
+        let (source, copy) = (&s.data.null_shells[0], &s.data.null_shells[1]);
+        assert_eq!(source.mesh_id.as_deref(), Some(mesh));
+        assert_eq!(copy.mesh_id.as_deref(), Some(mesh));
+        assert_eq!(copy.instance_of.as_deref(), Some(source.id.as_str()));
+        assert_eq!(&copy.instance_transform.unwrap()[12..15], &[7., 8., 9.]);
+        assert!(source.instance_of.is_none());
+        assert_eq!(s.data.references.len(), 1);
+        assert_eq!(s.data.references[0].kind, "repeat_object");
+        assert_eq!(s.data.references[0].node_id, s.data.nodes[1].id);
+        assert_eq!(
+            s.data.references[0].target_id.as_deref(),
+            Some(source.id.as_str())
+        );
+        assert_eq!(s.data.instances.len(), 2);
+        assert_eq!(s.data.instances[0].world_transform, IDENTITY);
+        assert_eq!(&s.data.instances[1].world_transform[12..15], &[7., 8., 9.]);
+        assert!(
+            s.data
+                .instances
+                .iter()
+                .all(|i| i.node_id == s.data.nodes[1].id && i.mesh_id == mesh)
+        );
+    }
+}
+#[test]
+fn repeat_object_rejections_and_unbound_sources_are_explicit() {
+    // A destination that is a mesh rather than a placeholder is not an instance.
+    let mut body = shell(&QUAD, &[3, 0, 1, 2], 8, 0, false);
+    body.extend(b"q");
+    body.extend(null_shell());
+    body.extend(b"q");
+    body.extend(instance([1, 0], [0, 0], 1, [1., 0., 0.]));
+    let s = read(&body, ParseMode::Partial).unwrap();
+    assert_eq!(s.diagnostics[0].code, "hsf.repeat_target");
+    assert_eq!(s.data.references[0].target_id, None);
+    assert_eq!(
+        read(&body, ParseMode::Strict).unwrap_err().diagnostic.code,
+        "hsf.repeat_target"
+    );
+    // Unknown variants and option bits remain variants, with or without a destination.
+    for (from, to, options) in [
+        ([0, 1], [-1, 0], 0),
+        ([0, 0], [-1, 1], 0),
+        ([0, 0], [-1, 0], 2),
+    ] {
+        let mut body = shell(&QUAD, &[3, 0, 1, 2], 8, 0, false);
+        body.extend(b"q");
+        body.extend(instance(from, to, options, [0., 0., 0.]));
+        let s = read(&body, ParseMode::Partial).unwrap();
+        assert_eq!(s.diagnostics[0].code, "hsf.repeat_variant");
+    }
+    // The tristrip option bit alone is accepted for ordinary copies.
+    let mut body = shell(&QUAD, &[3, 0, 1, 2], 8, 0, false);
+    body.extend(b"q");
+    body.extend(instance([0, 0], [-1, 0], 1, [2., 0., 0.]));
+    let s = read(&body, ParseMode::Strict).unwrap();
+    assert_eq!(s.data.instances.len(), 2);
+    // A source that never receives geometry leaves the instance empty and withholds
+    // verified placements like any unresolved refinement.
+    let mut body = null_shell();
+    body.extend(b"q");
+    body.extend(null_shell());
+    body.extend(b"q");
+    body.extend(instance([0, 0], [1, 0], 1, [1., 0., 0.]));
+    let s = read(&body, ParseMode::Partial).unwrap();
+    assert!(
+        s.diagnostics
+            .iter()
+            .any(|d| d.code == "hsf.repeat_source_unbound")
+    );
+    assert!(s.data.null_shells[1].mesh_id.is_none());
+    assert_eq!(s.data.placement_status, Status::Unsupported);
+    assert_eq!(
+        read(&body, ParseMode::Strict).unwrap_err().diagnostic.code,
+        "hsf.repeat_source_unbound"
+    );
+    // A destination with its own update is ambiguous; the binding is revoked.
+    let mut body = null_shell();
+    body.extend(b"q");
+    body.extend(null_shell());
+    body.extend(b"q");
+    body.extend(refinement(0, &QUAD, &[3, 0, 1, 2]));
+    body.extend(refinement(1, &QUAD, &[3, 0, 1, 2]));
+    body.extend(instance([0, 0], [1, 0], 1, [1., 0., 0.]));
+    let s = read(&body, ParseMode::Partial).unwrap();
+    assert!(
+        s.diagnostics
+            .iter()
+            .any(|d| d.code == "hsf.repeat_target_bound")
+    );
+    assert!(s.data.null_shells[1].mesh_id.is_none());
+    assert_eq!(
+        s.data.null_shells[0].mesh_id.as_deref(),
+        Some(s.data.meshes[0].id.as_str())
+    );
+    assert!(s.data.instances.is_empty());
+}
+#[test]
+fn best_effort_placement_is_an_explicit_partial_estimate() {
+    // A startup alias withholds verified placements; best effort traverses anyway.
+    let mut body = b"(\x10?Include Library".to_vec();
+    body.extend(shell(&QUAD, &[3, 0, 1, 2], 8, 0, false));
+    body.extend(b")(\x01x<\x10?Include Library)");
+    let verified = read(&body, ParseMode::Partial).unwrap();
+    assert_eq!(verified.data.placement_status, Status::Unsupported);
+    assert!(verified.data.instances.is_empty());
+    let best_effort = SceneOptions {
+        placement: PlacementPolicy::BestEffort,
+        ..Default::default()
+    };
+    let estimated = read_with(&body, best_effort.clone()).unwrap();
+    assert_eq!(estimated.status, Status::Partial);
+    assert_eq!(estimated.data.placement_status, Status::Partial);
+    // The library body renders through the include only, not at its own position.
+    assert_eq!(estimated.data.instances.len(), 1);
+    assert!(
+        estimated.data.instances[0]
+            .path
+            .contains(&"reference:0".to_string())
+    );
+    let d = estimated
+        .diagnostics
+        .iter()
+        .find(|d| d.code == "hsf.placement_estimated")
+        .unwrap();
+    assert_eq!(d.severity, "warning");
+    assert_eq!(d.classification, Status::Partial);
+    assert!(d.message.contains("segment_aliases"));
+    assert_eq!(
+        read_with(
+            &body,
+            SceneOptions {
+                mode: ParseMode::Strict,
+                ..best_effort.clone()
+            }
+        )
+        .unwrap_err()
+        .diagnostic
+        .code,
+        "hsf.placement_policy_rejected"
+    );
+    // A scene-stage stop keeps the processed prefix placed and names the stop.
+    let mut body = shell(&QUAD, &[3, 0, 1, 2], 8, 0, false);
+    body.extend(b"(\x04../x)");
+    let verified = read(&body, ParseMode::Partial).unwrap();
+    assert_eq!(verified.diagnostics[0].code, "hsf.segment_path");
+    assert!(verified.data.instances.is_empty());
+    let stopped = read_with(&body, best_effort).unwrap();
+    assert_eq!(stopped.data.processed_records, 1);
+    assert_eq!(stopped.data.instances.len(), 1);
+    assert_eq!(stopped.data.placement_status, Status::Partial);
+    let d = stopped
+        .diagnostics
+        .iter()
+        .find(|d| d.code == "hsf.placement_estimated")
+        .unwrap();
+    assert!(d.message.contains("stopped_at_unsupported_record"));
+    assert_eq!(d.source, stopped.diagnostics[0].source);
+    // Verified scenes without withheld state are unchanged by the policy.
+    let clean = read_with(
+        &shell(&QUAD, &[3, 0, 1, 2], 8, 0, false),
+        SceneOptions {
+            placement: PlacementPolicy::BestEffort,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(clean.status, Status::Complete);
+    assert_eq!(clean.data.placement_status, Status::Complete);
+}

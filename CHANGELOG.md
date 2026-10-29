@@ -1,6 +1,22 @@
 # Changelog
 
-## Unreleased
+## Unreleased (0.1.0-alpha.2, contract 34)
+
+- `SceneOptions.mount_path`: resolve relative paths that climb above the file
+  root through the producer's mount path; external results are explicit
+  (`hsf.segment_path_external`, `hsf.reference_external`, `hsf.invalid_mount_path`).
+- Repeat Object: `TK_Instance` operand order, the tristrip option bit, and
+  in-place instances of tagged Null Shells (`NullShell.instance_of`,
+  `instance_transform`; `hsf.repeat_source_unbound`, `hsf.repeat_target_bound`).
+- `SceneOptions.placement = PlacementPolicy::BestEffort`: estimated instances
+  under withheld state and after partial stops, labeled `hsf.placement_estimated`;
+  rejected in strict mode (`hsf.placement_policy_rejected`).
+- Include Library segments that are include targets render only through their
+  includes, not at their own tree position.
+- Capabilities add `mounted_root_relative_paths`,
+  `repeat_object_null_shell_instances` and `best_effort_placement`.
+
+## 0.1.0-alpha.1
 
 Initial alpha API for bounded HSF syntax parsing and generic scene extraction:
 

@@ -107,6 +107,11 @@ impl Builder<'_> {
 pub struct NullShell {
     /// The unique supported LOD 0 geometry, or None for an empty/conflicting object.
     pub mesh_id: Option<String>,
+    /// Source Null Shell when this placeholder is an in-place Repeat Object
+    /// instance: its geometry is the source's bound geometry times
+    /// `instance_transform`, placed in this placeholder's own segment.
+    pub instance_of: Option<String>,
+    pub instance_transform: Option<Matrix>,
     pub id: String,
     pub node_id: String,
     pub source_record_id: String,

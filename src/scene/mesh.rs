@@ -133,7 +133,7 @@ impl Builder<'_> {
             self.unresolved_refinement = true;
             self.null_meshes.insert(target, None);
             self.data.null_shells[target].mesh_id = None;
-            if let Some(i) = previous {
+            if let Some((i, _)) = previous {
                 let mesh = &mut self.data.meshes[i];
                 let refinement = mesh.refinement.as_mut().expect("refinement");
                 refinement.application_status = Status::Unsupported;
@@ -211,7 +211,7 @@ impl Builder<'_> {
             };
         }
         self.data.null_shells[target].mesh_id = Some(mesh.id.clone());
-        self.null_meshes.insert(target, Some(i));
+        self.null_meshes.insert(target, Some((i, IDENTITY)));
         self.data.meshes.push(mesh);
         // Refinement updates the original object, not the current segment.
         self.last = Some(Object::NullShell(target));

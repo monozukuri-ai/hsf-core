@@ -12,6 +12,19 @@ scene coverage and placement validity are separate; see
 Definitions can remain available when placements are withheld. Inspect
 `placement_status`, `processed_records` and diagnostics before consuming them.
 
+### Placement policy
+
+`SceneOptions.placement` defaults to `PlacementPolicy::Verified`: whenever opaque
+User Data, unresolved refinements or instances, unevaluated rendering settings,
+textures, images, import context, startup aliases or incomplete style
+resolutions remain, every placement is withheld and `placement_status` is
+`unsupported`. `PlacementPolicy::BestEffort` traverses the stored tree, matrices
+and references anyway (also after a partial stop, for the processed prefix) and
+adds the warning `hsf.placement_estimated`, whose message lists the ignored
+state. The result is always partial and strict mode rejects the policy
+(`hsf.placement_policy_rejected`). Treat those instances as estimates to verify
+against the producing application, never as proof of arrangement.
+
 `Mesh.owner_node_id` and `Primitive.owner_node_id` identify the defining segment.
 Includes, references and repeats preserve that owner. A supported Null Shell
 refinement keeps its target's owner; `refinement.context_node_id` identifies
@@ -51,14 +64,39 @@ Unquoted ASCII literal paths use case-insensitive names, collapsed/trimmed space
 and `.`/`..`/`^` navigation. Source spelling is retained. Open Segment can create
 missing literal parents with `implicit = true` and the creating record's source;
 Close returns to the original scope. Anonymous segments are supported, but
-relative paths from them are not. Quotes, wildcards, path lists, unknown aliases,
-non-ASCII names and root-escaping paths remain unsupported.
+relative paths from them are not. Quotes, wildcards, path lists, unknown aliases
+and non-ASCII names remain unsupported.
+
+Paths that climb above the file root are unsupported unless
+`SceneOptions.mount_path` names the absolute runtime path at which the producer
+mounted this file's root. Navigation then continues through the mount's
+ancestors: a result inside the mount maps back to a file path (an open creates
+or reuses that file segment), and a result outside it is external. External
+opens stop with `hsf.segment_path_external`; external includes and styles omit
+their branch (`hsf.reference_external`). The mount path follows the import-root
+grammar and errors with `hsf.invalid_mount_path`. Nothing outside the file is
+loaded or asserted.
 
 References resolve previously known literal paths/tags. Reopen uses final segment
-attributes. Repeat Object supports previously tagged geometry, variants 0/new
-target (-1), and options 0. Unresolved references, cycles and conditional includes
+attributes. Repeat Object (`TK_Instance` order: source index/variant, destination
+index/variant, options, matrix) supports variant 0 and the tristrip option bit.
+With destination `-1` it copies previously tagged geometry into the current
+segment. With a destination index it makes an existing tagged Null Shell an
+in-place instance of a tagged Null Shell source: `NullShell.instance_of` and
+`instance_transform` record the link, the copy keeps its own segment, and its
+geometry is the source's bound LOD 0 geometry times the instance matrix once
+that source is bound (before or after the record). Unbound sources, destinations
+with their own update and other target kinds are explicit
+(`hsf.repeat_source_unbound`, `hsf.repeat_target_bound`, `hsf.repeat_target`,
+`hsf.repeat_variant`). Unresolved references, cycles and conditional includes
 omit their branch with diagnostics; unsupported scope can withhold all placements.
 Traversal depth/work remains bounded even when expansion yields no geometry.
+
+Segments under the standard Include Library (`/include library`, by alias,
+literal path or mount path) are definitions: when they are include targets they
+render only through their includes, not at their own tree position. Included
+segments elsewhere render both at their position and through the include, as in
+HOOPS. Library segments that nothing includes are traversed normally.
 
 `style_segments` retains ordered edges and source expressions. The supported
 unconditional subset resolves display attributes without including style-target

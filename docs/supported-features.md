@@ -67,7 +67,7 @@ unsupported. Unknown optional attributes still stop at the enclosing opcode.
 
 | Feature | Scope |
 | --- | --- |
-| Segments and references | Bounded literal paths, previously known tags, includes/references, reopen attributes and selected Repeat Object forms |
+| Segments and references | Bounded literal paths, optionally rebased through a configured mount path, previously known tags, includes/references (Include Library targets render only through includes), reopen attributes, Repeat Object copies and in-place Null Shell instances |
 | Transforms and handedness | Stored modelling matrices and inherited handedness, with local geometry preserved |
 | Display attributes | Selected RGB/visibility masks, size/weight units, basic numeric patterns/symbols, text alignment and texture matrices |
 | Style Segment | Bounded unconditional display inheritance; conditions, conflicts, cycles and unknown effects remain unsupported |
@@ -92,3 +92,9 @@ Unsupported global state can withhold every placement while retaining local
 geometry. Missing or unsupported reference branches may be omitted with explicit
 diagnostics. Never treat a partial scene or a complete syntax result as proof
 of complete document interpretation.
+
+`SceneOptions.placement = PlacementPolicy::BestEffort` is the one exception to
+withholding: in partial mode it traverses the stored tree, matrices and
+references anyway and reports `hsf.placement_estimated` with the ignored state.
+Those instances are estimates, not verified placements; strict mode rejects the
+policy. See [Scene data](scene-data.md#placement-policy).

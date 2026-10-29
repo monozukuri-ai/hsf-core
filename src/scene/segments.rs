@@ -24,6 +24,14 @@ pub struct StyleSegmentReference {
     pub interpretation_status: Status,
 }
 
+/// A literal path resolved against the file tree, or a runtime path that leaves
+/// the mounted file root and therefore names nothing in this file.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum ResolvedPath {
+    Internal(String),
+    External(String),
+}
+
 impl Builder<'_> {
     pub(super) fn definition_count(&self) -> usize {
         self.data.images.len()
@@ -40,7 +48,7 @@ impl Builder<'_> {
         current: usize,
         name: &str,
         r: &Record,
-    ) -> Result<Option<String>, HsfError> {
+    ) -> Result<Option<ResolvedPath>, HsfError> {
         // Quoted names, lists and wildcard searches require their own grammar.
         // Only space is a supported whitespace character in an unquoted name.
         if name.trim_matches(' ').is_empty()
@@ -55,8 +63,13 @@ impl Builder<'_> {
         // before allocating. These are additional to retained node-path charges.
         let components = name.bytes().filter(|b| *b == b'/').count() as u64 + 1;
         let base_len = self.node_paths[current].as_ref().map_or(0, String::len) as u64;
-        self.budget
-            .charge_output(name.len() as u64 * 3 + components * 80 + base_len * 8 + 128)?;
+        let mount_len: u64 = self
+            .mount
+            .as_ref()
+            .map_or(0, |m| m.iter().map(|c| c.len() as u64 + 1).sum());
+        self.budget.charge_output(
+            name.len() as u64 * 3 + components * 80 + (base_len + mount_len) * 8 + 128,
+        )?;
         let normalized: Vec<String> = name
             .split('/')
             .map(|p| {
@@ -96,28 +109,57 @@ impl Builder<'_> {
         {
             return Ok(None);
         }
-        let base = if let Some((_, path)) = binding {
-            path
+        let base: String = if let Some((_, path)) = binding {
+            path.to_owned()
         } else if name.starts_with('/') {
-            "/"
+            "/".to_owned()
         } else if let Some(path) = &self.node_paths[current] {
-            path
+            path.clone()
         } else {
             return Ok(None);
         };
-        let mut parts: Vec<&str> = base.split('/').filter(|s| !s.is_empty()).collect();
+        let mut parts: Vec<String> = base
+            .split('/')
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+            .collect();
+        let mount = self.mount.clone();
+        let mut escaped = false;
         for p in &normalized[skip..] {
             match p.as_str() {
                 "" | "." => {}
                 ".." | "^" => {
                     if parts.pop().is_none() {
-                        return Ok(None);
+                        // Above the file root. The producer's runtime continues
+                        // through the mount path's ancestors; without a mount, or
+                        // above the runtime root, the path stays unsupported.
+                        let Some(mount) = mount.as_ref().filter(|_| !escaped) else {
+                            return Ok(None);
+                        };
+                        let mut above = mount.clone();
+                        if above.pop().is_none() {
+                            return Ok(None);
+                        }
+                        parts = above;
+                        escaped = true;
                     }
                 }
-                _ => parts.push(p),
+                _ => parts.push(p.clone()),
             }
         }
-        let path = format!("/{}", parts.join("/"));
+        let path = if escaped {
+            let mount = mount.as_ref().expect("escaped paths have a mount");
+            if parts.len() >= mount.len() && parts.iter().zip(mount).all(|(p, m)| p == m) {
+                format!("/{}", parts[mount.len()..].join("/"))
+            } else {
+                return Ok(Some(ResolvedPath::External(format!(
+                    "/{}",
+                    parts.join("/")
+                ))));
+            }
+        } else {
+            format!("/{}", parts.join("/"))
+        };
         if let Some((alias, target_path)) = binding {
             if !self.data.segment_aliases.iter().any(|a| a.alias == alias) {
                 limit(
@@ -137,7 +179,7 @@ impl Builder<'_> {
                 });
             }
         }
-        Ok(Some(path))
+        Ok(Some(ResolvedPath::Internal(path)))
     }
 
     pub(super) fn style_segment(&mut self, r: &Record, n: usize) -> Result<(), HsfError> {
@@ -154,8 +196,10 @@ impl Builder<'_> {
             self.budget,
         )?;
         let target = if let Some(name) = &path.value {
-            self.segment_path(n, name, r)?
-                .and_then(|p| self.paths.get(&p).copied())
+            self.segment_path(n, name, r)?.and_then(|p| match p {
+                ResolvedPath::Internal(p) => self.paths.get(&p).copied(),
+                ResolvedPath::External(_) => None,
+            })
         } else {
             None
         };

@@ -113,4 +113,19 @@ and `?Style Library`. `segment_aliases` records the binding and first-use source
 Unknown runtime overrides leave warnings; strict mode rejects the assumptions
 and all placements remain withheld. Unrecognized aliases are unsupported.
 
+## Mount path and best-effort placement
+
+An adapter that knows where the producer mounted the file's root in its runtime
+segment tree, for example from a container or application header, can pass that
+absolute literal path as `SceneOptions.mount_path`. Relative paths that climb
+above the file root are then resolved through the mount's ancestors and mapped
+back into the file; paths that leave the mount are reported as external and
+never fabricated. Without a mount path the file root remains the only root.
+
+`SceneOptions.placement = PlacementPolicy::BestEffort` lets an adapter obtain
+estimated instances when verified placements are withheld. The crate adds
+`hsf.placement_estimated` with the ignored state, keeps the result partial and
+rejects the policy in strict mode. The adapter owns the decision to show such
+estimates and should label them as estimates downstream.
+
 [Supported features](supported-features.md) · [Documentation index](README.md)
