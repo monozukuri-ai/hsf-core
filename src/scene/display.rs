@@ -142,6 +142,17 @@ pub struct UserIndices {
     pub interpretation_status: Status,
 }
 
+/// Segment metadata blobs keyed by application index (TKE_User_Index_Data).
+/// Bytes stay source-backed and opaque; producers assign the index meanings.
+#[derive(Clone, Debug, Serialize)]
+pub struct UserIndexData {
+    pub node_id: String,
+    pub source_record_id: String,
+    pub source: SourceSpan,
+    pub layout: UserIndexDataLayout,
+    pub interpretation_status: Status,
+}
+
 /// Named image references only: never load external files, URLs or texture code.
 #[derive(Clone, Debug, Serialize)]
 pub struct TextureDefinition {

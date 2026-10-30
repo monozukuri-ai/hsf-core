@@ -1,6 +1,7 @@
 //! A deliberately bounded generic scene profile, independent of CAD products.
 use crate::*;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 mod text_settings;
 pub use text_settings::*;
 mod glyph;
@@ -64,6 +65,9 @@ pub struct SceneOptions {
     /// change the arrangement. BestEffort traverses anyway in partial mode and
     /// labels the result an estimate; strict mode rejects it.
     pub placement: PlacementPolicy,
+    /// Which part of the stored tree is placed. Nodes, definitions and
+    /// inventories always cover the whole file; only instances are limited.
+    pub traversal: Traversal,
 }
 impl Default for SceneOptions {
     fn default() -> Self {
@@ -83,8 +87,26 @@ impl Default for SceneOptions {
             inventory_terminal_user_data_record: None,
             mount_path: None,
             placement: PlacementPolicy::Verified,
+            traversal: Traversal::All,
         }
     }
+}
+/// Which part of the stored tree the placement traversal visits.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Traversal {
+    /// Everything reachable from the file root (default).
+    #[default]
+    All,
+    /// Only the subtree at this absolute literal segment path, plus whatever it
+    /// includes or references. Ancestors contribute their inherited attributes
+    /// but place nothing of their own; sibling branches place nothing. Producers
+    /// that save several configurations as root children (eDrawings `configN`)
+    /// are read one configuration at a time this way. An unknown path places
+    /// nothing and reports `hsf.traversal_root_unknown`.
+    Subtree(String),
+    /// Build the inventory without placing anything.
+    Skip,
 }
 /// How unresolved global state affects instance placement.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -213,7 +235,9 @@ pub struct Attribute<T> {
 pub struct Node {
     pub implicit: bool,
     pub world_handedness: Option<Attribute<Handedness>>,
-    pub display: DisplayAttributes,
+    /// The segment's own attributes. Shared copy-on-write: nodes without any
+    /// attribute of their own point at one empty value.
+    pub display: Arc<DisplayAttributes>,
     pub id: String,
     pub name: Option<String>,
     pub name_source: Option<SourceSpan>,
@@ -234,7 +258,9 @@ pub struct Reference {
 }
 #[derive(Clone, Debug, Serialize)]
 pub struct Instance {
-    pub display: DisplayAttributes,
+    /// Inherited attributes, shared by the instances placed from one segment
+    /// visit (one allocation per visited segment, not per instance).
+    pub display: Arc<DisplayAttributes>,
     pub world_handedness: Option<Attribute<Handedness>>,
     pub id: String,
     pub mesh_id: String,
@@ -269,6 +295,7 @@ pub struct Scene {
     pub primitive_instances: Vec<PrimitiveInstance>,
     pub user_options: Vec<UserOptions>,
     pub user_indices: Vec<UserIndices>,
+    pub user_index_data: Vec<UserIndexData>,
     /// HSF coordinates have no inferred unit.
     pub units: Option<String>,
     pub meshes: Vec<Mesh>,
@@ -422,6 +449,7 @@ pub fn scene(
             primitive_instances: vec![],
             user_options: vec![],
             user_indices: vec![],
+            user_index_data: vec![],
             meshes: vec![],
             nodes: vec![],
             references: vec![],
@@ -431,6 +459,7 @@ pub fn scene(
         diagnostics: parsed.diagnostics.clone(),
         links: vec![],
         paths: HashMap::new(),
+        empty_display: Arc::new(DisplayAttributes::default()),
         node_paths: vec![],
         node_depths: vec![],
         tags: HashMap::new(),
@@ -486,8 +515,8 @@ pub fn scene(
                     b.resolve_instances()?;
                     let mut reasons = b.withholding_reasons();
                     reasons.push("stopped_at_unsupported_record");
-                    b.estimate_placements(&reasons, stopped.as_ref())?;
-                    return Ok(b.outcome(parsed, true));
+                    let placed = b.estimate_placements(&reasons, stopped.as_ref())?;
+                    return Ok(b.outcome(parsed, placed));
                 }
                 return Ok(b.outcome(parsed, false));
             }
@@ -506,25 +535,50 @@ pub fn scene(
         // Inventoried definitions retain local bytes. Unknown application state
         // cannot be asserted as a world placement, even with a complete suffix.
         if options.placement == PlacementPolicy::BestEffort {
-            b.estimate_placements(&reasons, None)?;
-            return Ok(b.outcome(parsed, true));
+            let placed = b.estimate_placements(&reasons, None)?;
+            return Ok(b.outcome(parsed, placed));
         }
         return Ok(b.outcome(parsed, false));
     }
-    b.traverse().map_err(|mut e| {
+    let placed = b.traverse().map_err(|mut e| {
         if e.diagnostic.stage == "hsf_header" {
             e.diagnostic.stage = "scene".into();
         }
         e.diagnostic.version = Some(parsed.data.header.version.text.clone());
         e
     })?;
-    Ok(b.outcome(parsed, true))
+    Ok(b.outcome(parsed, placed))
+}
+
+/// Decoded text of a User Options (`U`) or Unicode Options record, for callers
+/// that select scene options from the syntax records before building a scene.
+/// None for other records. The value keeps the scene's decoding conventions.
+pub fn user_option_text(
+    doc: &HsfDocument,
+    record: &Record,
+    budget: &mut Budget,
+) -> Result<Option<TextValue>, HsfError> {
+    if !matches!(record.opcode, b'U' | 0x16) {
+        return Ok(None);
+    }
+    let Some(payload) = record.payload.as_ref() else {
+        return Ok(None);
+    };
+    primitive::text(
+        doc,
+        payload,
+        if record.opcode == 0x16 { Some(5) } else { None },
+        budget,
+    )
+    .map(Some)
 }
 
 struct Builder<'a> {
     doc: &'a HsfDocument,
     options: &'a SceneOptions,
     budget: &'a mut Budget,
+    /// Shared empty attributes for nodes that never set any (copy-on-write).
+    empty_display: Arc<DisplayAttributes>,
     data: Scene,
     diagnostics: Vec<Diagnostic>,
     links: Vec<Vec<Link>>,
@@ -580,6 +634,15 @@ impl Builder<'_> {
             usage: self.budget.usage().clone(),
         }
     }
+    /// Mutable access to a node's own attributes. The first mutation of a shared
+    /// (still empty) value copies it and is charged at the attribute size.
+    fn display_mut(&mut self, n: usize) -> Result<&mut DisplayAttributes, HsfError> {
+        if Arc::strong_count(&self.data.nodes[n].display) > 1 {
+            self.budget
+                .charge_output(std::mem::size_of::<DisplayAttributes>() as u64 + 64)?;
+        }
+        Ok(Arc::make_mut(&mut self.data.nodes[n].display))
+    }
     fn issue(&mut self, r: &Record, code: &str, message: &str) -> Result<(), HsfError> {
         let mut e = fail(r, code, Status::Unsupported, message);
         e.diagnostic.version = Some(self.doc.header.version.text.clone());
@@ -604,12 +667,13 @@ impl Builder<'_> {
         )?;
         let depth = parent.map_or(1, |p| self.node_depths[p] + 1);
         limit(depth, self.options.max_depth, "hsf.limit_scene_depth")?;
-        self.budget.charge_output(8192)?;
+        self.budget
+            .charge_output(std::mem::size_of::<Node>() as u64 + 512)?;
         let i = self.data.nodes.len();
         self.data.nodes.push(Node {
             implicit: false,
             world_handedness: None,
-            display: DisplayAttributes::default(),
+            display: self.empty_display.clone(),
             id: format!("segment:{i}"),
             name,
             name_source,
@@ -1060,16 +1124,16 @@ impl Builder<'_> {
                     source: r.source.clone(),
                 });
                 if r.opcode == b'+' {
-                    self.data.nodes[n].display.marker_size = attribute;
+                    self.display_mut(n)?.marker_size = attribute;
                 } else if r.opcode == b'=' {
-                    self.data.nodes[n].display.line_weight = attribute;
+                    self.display_mut(n)?.line_weight = attribute;
                 } else {
-                    self.data.nodes[n].display.edge_weight = attribute;
+                    self.display_mut(n)?.edge_weight = attribute;
                 }
             }
             b'$' => {
                 self.budget.charge_output(4096)?;
-                self.data.nodes[n].display.texture_matrix = Some(Attribute {
+                self.display_mut(n)?.texture_matrix = Some(Attribute {
                     value: matrix(
                         self.doc
                             .source_bytes(r.payload.as_ref().expect("texture matrix"))
@@ -1096,7 +1160,7 @@ impl Builder<'_> {
                 if let Some(color) = &r.indexed_color {
                     for bit in 0..32 {
                         if color.geometry_mask & 0x017f7f7f & (1 << bit) != 0 {
-                            self.data.nodes[n].display.colors[bit] = None;
+                            self.display_mut(n)?.colors[bit] = None;
                         }
                     }
                     self.data.nodes[n].face_color = self.data.nodes[n].display.colors[0].clone();
@@ -1109,7 +1173,7 @@ impl Builder<'_> {
                         // RGB values. Do not expose a stale local face color.
                         for bit in 0..32 {
                             if layout.mask & 0x017f7f7f & (1 << bit) != 0 {
-                                self.data.nodes[n].display.colors[bit] = None;
+                                self.display_mut(n)?.colors[bit] = None;
                             }
                         }
                         self.data.nodes[n].face_color =
@@ -1146,7 +1210,7 @@ impl Builder<'_> {
                 }
                 for bit in 0..32 {
                     if l.mask & 0x037f_ff7f & (1 << bit) != 0 {
-                        self.data.nodes[n].display.visibility[bit] = Some(Attribute {
+                        self.display_mut(n)?.visibility[bit] = Some(Attribute {
                             value: l.value & (1 << bit) != 0,
                             source: r.source.clone(),
                         });
@@ -1164,7 +1228,7 @@ impl Builder<'_> {
                     if mask & 0x017f7f7f & (1 << bit) == 0 {
                         continue;
                     }
-                    self.data.nodes[n].display.colors[bit] = Some(Attribute {
+                    self.display_mut(n)?.colors[bit] = Some(Attribute {
                         value: bytes.try_into().expect("rgb"),
                         source: r.source.clone(),
                     });
@@ -1230,7 +1294,19 @@ impl Builder<'_> {
                     node_id: self.data.nodes[n].id.clone(),
                     source_record_id: r.id.clone(),
                     source: r.source.clone(),
-                    layout: r.user_index.clone().expect("framed user index"),
+                    layout: *r.user_index.clone().expect("framed user index"),
+                    interpretation_status: Status::Unsupported,
+                });
+            }
+            b'm' => {
+                let layout = *r.user_index_data.clone().expect("framed user index data");
+                self.budget
+                    .charge_output(1024 + 64 * layout.entries.len() as u64)?;
+                self.data.user_index_data.push(UserIndexData {
+                    node_id: self.data.nodes[n].id.clone(),
+                    source_record_id: r.id.clone(),
+                    source: r.source.clone(),
+                    layout,
                     interpretation_status: Status::Unsupported,
                 });
             }
@@ -1665,7 +1741,7 @@ impl Builder<'_> {
         &mut self,
         reasons: &[&str],
         stopped: Option<&SourceSpan>,
-    ) -> Result<(), HsfError> {
+    ) -> Result<bool, HsfError> {
         self.budget.charge_output(2048)?;
         let mut d = error(
             "hsf.placement_estimated",
@@ -1685,7 +1761,86 @@ impl Builder<'_> {
         self.diagnostics.push(*d.diagnostic);
         self.traverse()
     }
-    fn traverse(&mut self) -> Result<(), HsfError> {
+    /// Resolve `Traversal::Subtree` to a node and the tree edges leading to it:
+    /// for every strict ancestor, the one child on the way down.
+    fn traversal_subtree(&mut self) -> Result<Option<Option<HashMap<usize, usize>>>, HsfError> {
+        let Traversal::Subtree(path) = &self.options.traversal else {
+            return Ok(Some(None));
+        };
+        let path = path.clone();
+        let unknown = |this: &mut Self,
+                       why: &str|
+         -> Result<Option<Option<HashMap<usize, usize>>>, HsfError> {
+            let mut e = error(
+                "hsf.traversal_root_unknown",
+                Status::Unsupported,
+                &format!("Traversal subtree {path:?} {why}; nothing is placed"),
+            );
+            e.diagnostic.stage = "scene".into();
+            e.diagnostic.version = Some(this.doc.header.version.text.clone());
+            e.diagnostic.impact =
+                Some("Instances are withheld; nodes and definitions remain available".into());
+            if this.options.mode == ParseMode::Strict {
+                return Err(e);
+            }
+            this.budget.charge_output(512)?;
+            this.diagnostics.push(*e.diagnostic);
+            Ok(None)
+        };
+        // Absolute literal paths only: aliases and relative navigation would
+        // depend on state this option is meant to bypass.
+        if !path.starts_with('/') || path.contains('?') || self.doc.records.is_empty() {
+            return unknown(self, "is not an absolute literal segment path");
+        }
+        let anchor: &Record = &self.doc.records[0];
+        let target = match self.segment_path(0, &path, anchor)? {
+            Some(ResolvedPath::Internal(p)) => self.paths.get(&p).copied(),
+            _ => None,
+        };
+        let Some(target) = target else {
+            return unknown(self, "names no segment of this file");
+        };
+        let index: HashMap<&str, usize> = self
+            .data
+            .nodes
+            .iter()
+            .enumerate()
+            .map(|(i, n)| (n.id.as_str(), i))
+            .collect();
+        let mut descend_only = HashMap::new();
+        let mut child = target;
+        while let Some(parent) = self.data.nodes[child]
+            .parent_id
+            .as_deref()
+            .and_then(|p| index.get(p).copied())
+        {
+            descend_only.insert(parent, child);
+            child = parent;
+        }
+        self.budget
+            .charge_output(512 + 32 * descend_only.len() as u64)?;
+        let mut d = error(
+            "hsf.traversal_subtree",
+            Status::Partial,
+            &format!(
+                "Only the subtree at {path:?} is placed; sibling branches are inventoried without instances"
+            ),
+        );
+        d.diagnostic.severity = "info".into();
+        d.diagnostic.stage = "scene".into();
+        d.diagnostic.version = Some(self.doc.header.version.text.clone());
+        self.diagnostics.push(*d.diagnostic);
+        Ok(Some(Some(descend_only)))
+    }
+    /// Returns whether anything was traversed (false when the traversal was
+    /// skipped or its subtree is unknown).
+    fn traverse(&mut self) -> Result<bool, HsfError> {
+        if self.options.traversal == Traversal::Skip {
+            return Ok(false);
+        }
+        let Some(descend_only) = self.traversal_subtree()? else {
+            return Ok(false);
+        };
         #[derive(Clone)]
         struct Frame {
             world_handedness: Option<Attribute<Handedness>>,
@@ -1695,7 +1850,7 @@ impl Builder<'_> {
             color: Option<Attribute<[u8; 3]>>,
             visible: Option<Attribute<bool>>,
             path: Vec<String>,
-            display: DisplayAttributes,
+            display: Arc<DisplayAttributes>,
         }
         let root = &self.data.nodes[0];
         limit(1, self.options.max_depth, "hsf.limit_scene_depth")?;
@@ -1707,19 +1862,21 @@ impl Builder<'_> {
             matrix: root.local_transform.as_ref().map_or(IDENTITY, |a| a.value),
             color: self.styled_displays[0]
                 .as_deref()
-                .unwrap_or(&root.display)
+                .unwrap_or(&*root.display)
                 .colors[0]
                 .clone(),
             visible: self.styled_displays[0]
                 .as_deref()
-                .unwrap_or(&root.display)
+                .unwrap_or(&*root.display)
                 .visibility[0]
                 .clone(),
             path: vec![root.id.clone()],
-            display: self.styled_displays[0]
-                .as_deref()
-                .unwrap_or(&root.display)
-                .clone(),
+            display: Arc::new(
+                self.styled_displays[0]
+                    .as_deref()
+                    .unwrap_or(&*root.display)
+                    .clone(),
+            ),
         }];
         while let Some(f) = frames.last_mut() {
             if f.next == self.links[f.node].len() {
@@ -1734,8 +1891,19 @@ impl Builder<'_> {
             )?;
             let link = self.links[f.node][f.next].clone();
             f.next += 1;
-            self.budget
-                .charge_output(16384 + f.path.iter().map(|s| s.len() as u64 + 64).sum::<u64>())?;
+            // Strict ancestors of a traversal subtree only lead downwards.
+            if let Some(only) = descend_only.as_ref().and_then(|d| d.get(&f.node)) {
+                let follows = link.reference.is_none()
+                    && matches!(link.object, Object::Node(n) if n == *only);
+                if !follows {
+                    continue;
+                }
+            }
+            // A visit itself retains nothing; the cloned path and the instance struct
+            // are charged only where an instance is kept (below), and a descended
+            // segment pays for its inherited attributes. No flat 16 KiB per visit.
+            let path_bytes: u64 = f.path.iter().map(|s| s.len() as u64 + 32).sum::<u64>() + 64;
+            self.budget.charge_output(64)?;
             let mut path = f.path.clone();
             if let Some(i) = link.reference {
                 path.push(self.data.references[i].id.clone());
@@ -1765,6 +1933,8 @@ impl Builder<'_> {
                             "Transform determinant is not finite",
                         ));
                     }
+                    self.budget
+                        .charge_output(std::mem::size_of::<Instance>() as u64 + path_bytes + 128)?;
                     self.data.instances.push(Instance {
                         display: f.display.clone(),
                         world_handedness: f.world_handedness.clone(),
@@ -1794,6 +1964,9 @@ impl Builder<'_> {
                             "Transform determinant is not finite",
                         ));
                     }
+                    self.budget.charge_output(
+                        std::mem::size_of::<PrimitiveInstance>() as u64 + path_bytes + 128,
+                    )?;
                     self.data.primitive_instances.push(PrimitiveInstance {
                         world_handedness: f.world_handedness.clone(),
                         id: format!("primitive_instance:{}", self.data.primitive_instances.len()),
@@ -1812,7 +1985,7 @@ impl Builder<'_> {
                     let node = &self.data.nodes[n];
                     let display = self.styled_displays[n]
                         .as_deref()
-                        .unwrap_or(&node.display)
+                        .unwrap_or(&*node.display)
                         .inherit(&f.display);
                     let matrix = multiply(
                         node.local_transform.as_ref().map_or(IDENTITY, |a| a.value),
@@ -1847,6 +2020,8 @@ impl Builder<'_> {
                         "hsf.limit_scene_depth",
                     )?;
                     path.push(node.id.clone());
+                    self.budget
+                        .charge_output(std::mem::size_of::<DisplayAttributes>() as u64 + 512)?;
                     frames.push(Frame {
                         world_handedness,
                         node: n,
@@ -1855,11 +2030,11 @@ impl Builder<'_> {
                         color,
                         visible,
                         path,
-                        display,
+                        display: Arc::new(display),
                     });
                 }
             }
         }
-        Ok(())
+        Ok(true)
     }
 }

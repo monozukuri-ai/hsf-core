@@ -68,7 +68,7 @@ impl Builder<'_> {
                 ],
             );
             complete &= e.interpretation_status == Status::Complete;
-            self.data.nodes[n].display.text_anchor = Some(Attribute {
+            self.display_mut(n)?.text_anchor = Some(Attribute {
                 value: e,
                 source: r.source.clone(),
             });
@@ -77,7 +77,7 @@ impl Builder<'_> {
         if index != 0 {
             let e = enumeration(index, &["no_setting", "left", "center", "right"]);
             complete &= e.interpretation_status == Status::Complete;
-            self.data.nodes[n].display.text_justification = Some(Attribute {
+            self.display_mut(n)?.text_justification = Some(Attribute {
                 value: e,
                 source: r.source.clone(),
             });

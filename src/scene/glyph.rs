@@ -147,11 +147,15 @@ impl Builder<'_> {
             let event = &mut self.data.rendering_options[p.event];
             event.interpretation_status = binding.status.clone();
             event.glyph_binding = Some(binding.clone());
-            if let Some(a) = self.data.nodes[p.node]
-                .display
-                .marker_symbol
-                .as_mut()
-                .filter(|a| a.source == event.source)
+            let event_source = event.source.clone();
+            // Only nodes that set a marker symbol own attributes to update; the
+            // shared empty value is never copied for a lookup.
+            if self.data.nodes[p.node].display.marker_symbol.is_some()
+                && let Some(a) = self
+                    .display_mut(p.node)?
+                    .marker_symbol
+                    .as_mut()
+                    .filter(|a| a.source == event_source)
             {
                 a.value.interpretation_status = binding.status.clone();
                 a.value.symbol = reason.is_none().then(|| "custom".into());
@@ -164,7 +168,7 @@ impl Builder<'_> {
                     "Named marker glyph is unresolved; placements are withheld",
                 );
                 e.diagnostic.stage = "scene".into();
-                e.diagnostic.source = Some(event.source.clone());
+                e.diagnostic.source = Some(event_source);
                 e.diagnostic.opcode = Some(b'@');
                 e.diagnostic.version = Some(self.doc.header.version.text.clone());
                 e.diagnostic.impact = Some(reason.into());

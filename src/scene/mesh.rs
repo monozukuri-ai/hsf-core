@@ -341,7 +341,7 @@ pub(super) fn decode(
     let s = r.shell.as_ref().expect("framed shell");
     // Includes vector capacity growth and retained metadata before allocation.
     budget
-        .charge_output(2048 + u64::from(s.vertex_count) * 24 + u64::from(s.face_value_count) * 8)?;
+        .charge_output(1024 + u64::from(s.vertex_count) * 24 + u64::from(s.face_value_count) * 8)?;
     let vertices = vectors(doc, &s.vertices, r)?;
     let (vertex_normals, normals) = polyhedron::normals(doc, r, budget)?;
     let entity_metadata = polyhedron::metadata(doc, r, budget)?;
@@ -493,7 +493,7 @@ fn grid(
         "hsf.limit_triangles",
     )?;
     // Account for vertices, optional normals, all derived indices and capacity growth.
-    budget.charge_output(2048 + u64::from(l.vertex_count) * 24 + cells * 128)?;
+    budget.charge_output(1024 + u64::from(l.vertex_count) * 24 + cells * 128)?;
     let vertices = vectors(doc, &l.vertices, r)?;
     let (vertex_normals, normals) = polyhedron::normals(doc, r, budget)?;
     let mut triangles = Vec::new();

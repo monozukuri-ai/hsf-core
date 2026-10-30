@@ -14,7 +14,7 @@ After the initial alpha is published to crates.io, add:
 
 ```toml
 [dependencies]
-hsf-core = "0.1.0-alpha.2"
+hsf-core = "0.1.0-alpha.3"
 ```
 
 For a local checkout, use `hsf-core = { path = "../hsf-core" }` instead.

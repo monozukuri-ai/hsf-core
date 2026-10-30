@@ -8,7 +8,7 @@ pub use syntax::*;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const SOURCE_SHA256: &str = env!("HSF_SOURCE_SHA256");
-pub const CONTRACT_VERSION: u32 = 34;
+pub const CONTRACT_VERSION: u32 = 35;
 pub const MAX_HEADER_BYTES: usize = 64;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -260,6 +260,11 @@ pub fn capabilities() -> Capabilities {
             "mounted_root_relative_paths",
             "repeat_object_null_shell_instances",
             "best_effort_placement",
+            "segment_priority_framing",
+            "user_index_data_framing",
+            "rendering_options_extended2_framing",
+            "backquoted_segment_names",
+            "traversal_subtree",
         ]
         .map(String::from)
         .to_vec(),

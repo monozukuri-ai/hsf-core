@@ -66,7 +66,10 @@ fn exact_framing_and_masks_in_all_supported_versions() {
                 continue;
             }
             let r = &p.data.records[0];
-            assert_eq!(r.visibility, Some(VisibilityLayout { mask, value }));
+            assert_eq!(
+                r.visibility.as_deref(),
+                Some(&VisibilityLayout { mask, value })
+            );
             assert_eq!(r.source.length, b.len() as u64 - 1);
             let s = scene(
                 &p,

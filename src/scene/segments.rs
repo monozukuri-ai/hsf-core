@@ -32,6 +32,23 @@ pub(super) enum ResolvedPath {
     External(String),
 }
 
+/// Stored spelling of a literal component: plain when the unquoted grammar
+/// would read it back identically, otherwise wrapped in backquotes.
+fn quote_component(p: &str) -> String {
+    let plain = !p.is_empty()
+        && !p.starts_with(' ')
+        && !p.ends_with(' ')
+        && !p.contains("  ")
+        && !matches!(p, "." | ".." | "..." | "....")
+        && p.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b" #+-$_.".contains(&b));
+    if plain {
+        p.to_owned()
+    } else {
+        format!("`{p}`")
+    }
+}
+
 impl Builder<'_> {
     pub(super) fn definition_count(&self) -> usize {
         self.data.images.len()
@@ -49,14 +66,47 @@ impl Builder<'_> {
         name: &str,
         r: &Record,
     ) -> Result<Option<ResolvedPath>, HsfError> {
-        // Quoted names, lists and wildcard searches require their own grammar.
-        // Only space is a supported whitespace character in an unquoted name.
-        if name.trim_matches(' ').is_empty()
-            || !name.is_ascii()
-            || name
-                .bytes()
-                .any(|b| !(b.is_ascii_alphanumeric() || b" #+-$_.^/?".contains(&b)))
-        {
+        // Lists and wildcard searches require their own grammar. Only space is a
+        // supported whitespace character in an unquoted name. A component wrapped
+        // in backquotes is a literal name (eDrawings 2026 opens "`eDrawings`"):
+        // the quotes are not part of the name, navigation/alias/wildcard meanings
+        // do not apply, and any printable ASCII except '`' and '/' is kept as is.
+        // Text glued to a quote, nested quotes and unbalanced quotes stay unsupported.
+        if name.trim_matches(' ').is_empty() || !name.is_ascii() {
+            return Ok(None);
+        }
+        let mut raw_parts: Vec<(String, bool)> = vec![(String::new(), false)];
+        let mut in_quote = false;
+        for b in name.bytes() {
+            let last = raw_parts.last_mut().expect("one part");
+            if in_quote {
+                match b {
+                    b'`' => in_quote = false,
+                    b'/' => return Ok(None),
+                    0x20..=0x7e => last.0.push(char::from(b)),
+                    _ => return Ok(None),
+                }
+            } else {
+                match b {
+                    b'`' => {
+                        if !last.0.is_empty() || last.1 {
+                            return Ok(None);
+                        }
+                        in_quote = true;
+                        last.1 = true;
+                    }
+                    b'/' => raw_parts.push((String::new(), false)),
+                    _ if b.is_ascii_alphanumeric() || b" #+-$_.^?".contains(&b) => {
+                        if last.1 {
+                            return Ok(None);
+                        }
+                        last.0.push(char::from(b));
+                    }
+                    _ => return Ok(None),
+                }
+            }
+        }
+        if in_quote || raw_parts.iter().any(|(p, quoted)| *quoted && p.is_empty()) {
             return Ok(None);
         }
         // Account for temporary normalized components and the candidate path
@@ -70,9 +120,15 @@ impl Builder<'_> {
         self.budget.charge_output(
             name.len() as u64 * 3 + components * 80 + (base_len + mount_len) * 8 + 128,
         )?;
-        let normalized: Vec<String> = name
-            .split('/')
-            .map(|p| {
+        // Names are case-insensitive. Unquoted components collapse and trim spaces;
+        // quoted components keep their spacing and are stored re-quoted whenever
+        // the plain spelling would read as navigation or special syntax.
+        let normalized: Vec<(String, bool)> = raw_parts
+            .into_iter()
+            .map(|(p, quoted)| {
+                if quoted {
+                    return (quote_component(&p.to_ascii_lowercase()), true);
+                }
                 let mut part = String::with_capacity(p.len());
                 let mut space = false;
                 for b in p.bytes() {
@@ -86,14 +142,17 @@ impl Builder<'_> {
                         space = false;
                     }
                 }
-                part
+                (part, false)
             })
             .collect();
-        if normalized.iter().any(|p| p == "..." || p == "....") {
+        if normalized
+            .iter()
+            .any(|(p, quoted)| !quoted && (p == "..." || p == "...."))
+        {
             return Ok(None);
         }
-        let (binding, skip) = if normalized[0].starts_with('?') {
-            let binding = match normalized[0].as_str() {
+        let (binding, skip) = if !normalized[0].1 && normalized[0].0.starts_with('?') {
+            let binding = match normalized[0].0.as_str() {
                 "?home" => ("?Home", "/"),
                 "?include library" => ("?Include Library", "/include library"),
                 "?style library" => ("?Style Library", "/style library"),
@@ -105,7 +164,7 @@ impl Builder<'_> {
         };
         if normalized[skip..]
             .iter()
-            .any(|p| p.contains('?') || (p.contains('^') && p != "^"))
+            .any(|(p, quoted)| !quoted && (p.contains('?') || (p.contains('^') && p != "^")))
         {
             return Ok(None);
         }
@@ -125,7 +184,11 @@ impl Builder<'_> {
             .collect();
         let mount = self.mount.clone();
         let mut escaped = false;
-        for p in &normalized[skip..] {
+        for (p, quoted) in &normalized[skip..] {
+            if *quoted {
+                parts.push(p.clone());
+                continue;
+            }
             match p.as_str() {
                 "" | "." => {}
                 ".." | "^" => {

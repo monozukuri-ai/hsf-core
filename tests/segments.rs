@@ -64,7 +64,6 @@ fn literal_identity_and_external_root_boundary() {
         b"?Home/../a",
         b"?unknown",
         b"/a/....",
-        b"/a/`b`",
         b"/a,(b)",
     ] {
         let body = [named(b'(', path), b")".to_vec()].concat();
@@ -281,4 +280,58 @@ fn include_library_targets_render_only_through_includes() {
     .concat();
     let s = read_with(&body, mounted()).unwrap();
     assert_eq!(s.data.instances.len(), 1);
+}
+
+#[test]
+fn backquoted_components_are_literal_names() {
+    // eDrawings 2026 opens "`eDrawings`". Quotes delimit a literal component and
+    // are not part of the name; names stay case-insensitive and reachable by an
+    // unquoted spelling. A quoted ".." is a name, not navigation, and is stored
+    // re-quoted so the plain path never reads back as navigation.
+    let body = [
+        named(b'(', b"`eDrawings`"),
+        named(b'(', b"product occurrence 0"),
+        b"))".to_vec(),
+        named(b'(', b"/a b/`..`"),
+        b")".to_vec(),
+        named(b'(', b"x"),
+        named(b'<', b"/edrawings/product occurrence 0"),
+        named(b'<', b"/`EDRAWINGS`/`product occurrence 0`"),
+        named(b'<', b"/`a b`/`..`"),
+        named(b'<', b"/a b/`..`"),
+        b")".to_vec(),
+    ]
+    .concat();
+    let s = read(&body, ParseMode::Strict, 10).unwrap();
+    assert_eq!(s.status, Status::Complete);
+    // root, `eDrawings`, product occurrence 0, a b (implicit), `..`, x
+    assert_eq!(s.data.nodes.len(), 6);
+    assert!(s.data.nodes[3].implicit);
+    let occurrence = &s.data.nodes[2].id;
+    let literal_dots = &s.data.nodes[4].id;
+    assert_eq!(s.data.references.len(), 4);
+    assert_eq!(s.data.references[0].target_id.as_ref(), Some(occurrence));
+    assert_eq!(s.data.references[1].target_id.as_ref(), Some(occurrence));
+    assert_eq!(s.data.references[2].target_id.as_ref(), Some(literal_dots));
+    assert_eq!(s.data.references[3].target_id.as_ref(), Some(literal_dots));
+    // Unbalanced quotes, slashes inside quotes, text glued to a quote and empty
+    // quotes stay unsupported.
+    for bad in [
+        b"`abc".as_slice(),
+        b"`a/b`",
+        b"x`y`",
+        b"`y`x",
+        b"``",
+        b"`a``b`",
+    ] {
+        let body = [named(b'(', bad), b")".to_vec()].concat();
+        let s = read(&body, ParseMode::Partial, 10).unwrap();
+        assert_eq!(
+            s.data.processed_records,
+            0,
+            "{:?}",
+            std::str::from_utf8(bad)
+        );
+        assert_eq!(s.diagnostics.last().unwrap().code, "hsf.segment_path");
+    }
 }

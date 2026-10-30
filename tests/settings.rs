@@ -425,12 +425,18 @@ fn every_truncation_is_invalid_and_unsupported_never_resynchronizes() {
             }
         }
     }
+    // Third word (TKO_Rendo_Extended2) with an operand-bearing option: contour.
+    let mut extended2 = vec![b'R'];
+    for word in [0x80000000u32, 0x80000000, 8, 0, 0, 8] {
+        extended2.extend(word.to_le_bytes());
+    }
     for (b, version, code) in [
         (
-            render(0x80000000, 0x80000000, 0, 0, &[]),
+            render(0x80000000, 0x40000000, 0, 0, &[]),
             "19.10",
             "hsf.rendering_options_mask",
         ),
+        (extended2, "19.10", "hsf.rendering_options_mask"),
         (
             render(0x18000000, 0, 0, 0, &[]),
             "19.10",

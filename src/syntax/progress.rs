@@ -195,9 +195,10 @@ impl Parser<'_> {
                     "Duplicate Shell attribute family",
                 ));
             }
-            // Fixed attributes retain at most six fields. Entity metadata adds
-            // per-field charges rather than precharging its maximum on every shell.
-            self.budget.charge_output(2048)?;
+            // Fixed attributes retain at most six fields (a few hundred bytes with
+            // the boxed layout). Entity metadata adds per-field charges rather than
+            // precharging its maximum on every shell.
+            self.budget.charge_output(256)?;
             let mut fields = vec![];
             if opcode == 99 {
                 // Entity collection is nested, and has its own termination.

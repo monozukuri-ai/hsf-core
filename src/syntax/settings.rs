@@ -23,6 +23,22 @@ pub struct UserIndexLayout {
     pub values: SourceSpan,
 }
 
+/// One TKE_User_Index_Data entry: a signed application index and opaque bytes.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UserIndexDataEntry {
+    pub index: i32,
+    pub data: SourceSpan,
+}
+
+/// TKE_User_Index_Data (`m`, written by HSF 17.80+ toolkits): count, then
+/// interleaved (index i32, size i32, data[size]) entries, unlike User Index.
+/// Text encodings remain unspecified.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UserIndexDataLayout {
+    pub count: u32,
+    pub entries: Vec<UserIndexDataEntry>,
+}
+
 fn limit(value: u64, maximum: u64, code: &str) -> Result<(), HsfError> {
     if value > maximum {
         Err(error(
@@ -153,6 +169,31 @@ impl Parser<'_> {
         })
     }
 
+    pub(super) fn user_index_data(
+        &mut self,
+        d: usize,
+        c: &mut Cursor<'_>,
+    ) -> Result<UserIndexDataLayout, HsfError> {
+        // The 3DF 20.10 reader reads a count, then per entry an index, a size and
+        // that many bytes; it rejects counts above 0x1000000. Sizes are read one
+        // at a time, so a cut entry is invalid rather than a different layout.
+        let count = c.nonnegative()?;
+        limit(
+            u64::from(count),
+            self.options.max_records,
+            "hsf.limit_user_index_data",
+        )?;
+        let mut entries = Vec::new();
+        for _ in 0..count {
+            self.budget.charge_output(64)?;
+            let index = c.u32()? as i32;
+            let size = c.nonnegative()?;
+            let data = c.array(d, size, 1)?;
+            entries.push(UserIndexDataEntry { index, data });
+        }
+        Ok(UserIndexDataLayout { count, entries })
+    }
+
     pub(super) fn render_options(
         &mut self,
         d: usize,
@@ -164,8 +205,21 @@ impl Parser<'_> {
         let version = (v.major, v.minor);
         let mask = c.u32()?;
         let high_mask = if mask & 0x80000000 != 0 { c.u32()? } else { 0 };
+        // 3DF 20.10 writers (eDrawings 2026) chain a third word behind the second
+        // when its bit 31 (TKO_Rendo_Extended2) is set. The three masks precede the
+        // three values; 19.10 headers carry it without any version gate.
+        let more_mask = if high_mask & 0x80000000 != 0 {
+            c.u32()?
+        } else {
+            0
+        };
         let value = c.u32()?;
         let high_value = if mask & 0x80000000 != 0 { c.u32()? } else { 0 };
+        let more_value = if high_mask & 0x80000000 != 0 {
+            c.u32()?
+        } else {
+            0
+        };
         // Complex nested profiles are not skippable: stop at the original R.
         const HIGH: u32 = 4
             | 0x100
@@ -179,8 +233,21 @@ impl Parser<'_> {
             | 0x4000
             | 0x8000
             | 0x10000
-            | 0x20000;
-        if mask & 0x1c000000 != 0 || high_mask & !HIGH != 0 {
+            | 0x20000
+            // Interpolation and depth-writing switches carry no operand (the SDK
+            // class has no member for them): index markers, Gooch lighting,
+            // transparency depth writing.
+            | 0x1000000
+            | 0x4000000
+            | 0x8000000
+            | 0x10000000
+            | 0x80000000;
+        // Third word: only switches without operands are known from the SDK header
+        // (frame buffer effects, scaled displacement, bump mapping parallax,
+        // randomize vertices). Anything with operands (forced lock, contour,
+        // isoline, tints, edge join cutoff) has an unverified position: stop.
+        const MORE: u32 = 2 | 4 | 0x100 | 0x200;
+        if mask & 0x1c000000 != 0 || high_mask & !HIGH != 0 || more_mask & !MORE != 0 {
             return Err(unsupported(
                 "hsf.rendering_options_mask",
                 "Rendering Options contains an unsupported nested profile or mask",
@@ -330,6 +397,8 @@ impl Parser<'_> {
         Ok(RenderingLayout {
             mask: u64::from(mask) | (u64::from(high_mask) << 32),
             value: u64::from(value) | (u64::from(high_value) << 32),
+            extended2_mask: more_mask,
+            extended2_value: more_value,
             fields,
         })
     }

@@ -19,7 +19,7 @@ pub const SYNTAX_OPCODES: &[u8] = &[
     0, b';', b'I', b'B', b'b', b'(', b')', b's', b'<', b'{', b'r', b'q', b'U', b'v', b'Z', b'z',
     b'S', b'%', b'~', b'V', b'&', b'l', b'L', b'C', b'c', b'T', b'x', 0x16, b'h', b'}', b'J', b'f',
     b'+', b'H', b'F', b'"', b'=', 0x0e, b'@', b'*', b'R', b'O', b'n', b'-', 0x0d, 1, b't', b'>',
-    b'?', 8, 9, b'M', b'X', b'$', 0x10, b'G', 0x0c, b'i', b'j',
+    b'?', 8, 9, b'M', b'X', b'$', 0x10, b'G', 0x0c, b'i', b'j', b'0', b'm',
 ];
 pub const SYNTAX_VERSIONS: &[(u16, u16)] = &[(8, 5), (14, 50), (19, 10)];
 
@@ -94,28 +94,29 @@ pub struct Record {
     pub condition: Option<SourceSpan>,
     /// File flags, reference index, bounds type, user value, or implicit tag index.
     pub value: Option<u32>,
-    pub shell: Option<ShellLayout>,
-    pub poly_polyline: Option<PolyPolylineLayout>,
-    pub primitive: Option<PrimitiveLayout>,
-    pub user_data: Option<UserDataLayout>,
-    pub view: Option<ViewLayout>,
-    pub visibility: Option<VisibilityLayout>,
-    pub line_style: Option<LineStyleLayout>,
-    pub glyph: Option<GlyphLayout>,
-    pub font: Option<FontLayout>,
-    pub marker_size: Option<MarkerSizeLayout>,
-    pub line_weight: Option<MarkerSizeLayout>,
-    pub edge_weight: Option<MarkerSizeLayout>,
-    pub named_style: Option<NamedStyleLayout>,
-    pub clip_region: Option<ClipRegionLayout>,
-    pub user_index: Option<UserIndexLayout>,
-    pub rendering: Option<RenderingLayout>,
-    pub camera: Option<CameraLayout>,
-    pub texture: Option<TextureLayout>,
-    pub image: Option<ImageLayout>,
-    pub indexed_color: Option<IndexedColorLayout>,
-    pub color_map: Option<ColorMapLayout>,
-    pub mesh: Option<GridMeshLayout>,
+    pub shell: Option<Box<ShellLayout>>,
+    pub poly_polyline: Option<Box<PolyPolylineLayout>>,
+    pub primitive: Option<Box<PrimitiveLayout>>,
+    pub user_data: Option<Box<UserDataLayout>>,
+    pub view: Option<Box<ViewLayout>>,
+    pub visibility: Option<Box<VisibilityLayout>>,
+    pub line_style: Option<Box<LineStyleLayout>>,
+    pub glyph: Option<Box<GlyphLayout>>,
+    pub font: Option<Box<FontLayout>>,
+    pub marker_size: Option<Box<MarkerSizeLayout>>,
+    pub line_weight: Option<Box<MarkerSizeLayout>>,
+    pub edge_weight: Option<Box<MarkerSizeLayout>>,
+    pub named_style: Option<Box<NamedStyleLayout>>,
+    pub clip_region: Option<Box<ClipRegionLayout>>,
+    pub user_index: Option<Box<UserIndexLayout>>,
+    pub user_index_data: Option<Box<UserIndexDataLayout>>,
+    pub rendering: Option<Box<RenderingLayout>>,
+    pub camera: Option<Box<CameraLayout>>,
+    pub texture: Option<Box<TextureLayout>>,
+    pub image: Option<Box<ImageLayout>>,
+    pub indexed_color: Option<Box<IndexedColorLayout>>,
+    pub color_map: Option<Box<ColorMapLayout>>,
+    pub mesh: Option<Box<GridMeshLayout>>,
 }
 
 /// Raw masks include extension flags; only mask-selected geometry bits apply.
@@ -553,6 +554,7 @@ impl Parser<'_> {
                 named_style: None,
                 clip_region: None,
                 user_index: None,
+                user_index_data: None,
                 rendering: None,
                 camera: None,
                 texture: None,
@@ -580,16 +582,20 @@ impl Parser<'_> {
                 e.diagnostic.impact = Some("Parsing stops; no scene has been generated".into());
                 return Err(e);
             }
-            self.budget.charge_output(2048).map_err(|e| {
-                self.fail(
-                    d,
-                    at,
-                    Some(op),
-                    &e.diagnostic.code,
-                    Status::LimitExceeded,
-                    &e.diagnostic.message,
-                )
-            })?;
+            // The retained record: the struct, its id/kind/scope strings and the
+            // span's domain id (layouts are boxed and charged where framed).
+            self.budget
+                .charge_output(std::mem::size_of::<Record>() as u64 + 256)
+                .map_err(|e| {
+                    self.fail(
+                        d,
+                        at,
+                        Some(op),
+                        &e.diagnostic.code,
+                        Status::LimitExceeded,
+                        &e.diagnostic.message,
+                    )
+                })?;
             record.source.length = (c.pos - at) as u64;
             if op == b'(' || op == b's' {
                 if self.stack.len() as u64 >= self.options.max_segment_depth {
@@ -679,9 +685,9 @@ impl Parser<'_> {
     ) -> Result<(), HsfError> {
         r.kind = match op {
             1 => "pause",
-            b'i' => { r.image = Some(self.image(d,c)?); "experimental_image" }
-            b't' => { r.texture = Some(self.texture(d,c)?); "texture" }
-            b'M' => { r.mesh = Some(self.grid_mesh(d,c)?); "mesh" }
+            b'i' => { r.image = Some(Box::new(self.image(d,c)?)); "experimental_image" }
+            b't' => { r.texture = Some(Box::new(self.texture(d,c)?)); "texture" }
+            b'M' => { r.mesh = Some(Box::new(self.grid_mesh(d,c)?)); "mesh" }
             b'?' => {
                 let v = &self.document.header.version;
                 if (v.major,v.minor) < (11,50) { return Err(error("hsf.conditions_version",Status::Unsupported,"Conditions requires HSF 11.50")); }
@@ -692,7 +698,7 @@ impl Parser<'_> {
             8 | 9 => {
                 let geometry_mask = self.color_mask(c)?;
                 let index = if op == 8 { u16::from(c.u8()?) } else { c.u16()? };
-                r.indexed_color = Some(IndexedColorLayout { geometry_mask, index });
+                r.indexed_color = Some(Box::new(IndexedColorLayout { geometry_mask, index }));
                 "color_by_index"
             }
             0x0c => {
@@ -707,7 +713,7 @@ impl Parser<'_> {
                         "Color map exceeds 65536 entries"));
                 }
                 let colors = self.payload(d, c, u64::from(entry_count) * 3)?;
-                r.color_map = Some(ColorMapLayout { format, entry_count, colors });
+                r.color_map = Some(Box::new(ColorMapLayout { format, entry_count, colors }));
                 "color_map"
             }
             b'h' => {
@@ -737,15 +743,15 @@ impl Parser<'_> {
                     let n = c.u8()?;
                     let name = self.payload(d, c, u64::from(n))?;
                     r.payload = Some(name.clone());
-                    r.view = Some(ViewLayout { projection, camera, name });
+                    r.view = Some(Box::new(ViewLayout { projection, camera, name }));
                     "view"
                 } else {
-                    r.camera = Some(CameraLayout { projection, settings: camera });
+                    r.camera = Some(Box::new(CameraLayout { projection, settings: camera }));
                     "camera"
                 }
             }
             0x10 => {
-                r.poly_polyline = Some(self.poly_polyline(d,c)?);
+                r.poly_polyline = Some(Box::new(self.poly_polyline(d,c)?));
                 "poly_polyline"
             }
             b'$' => {
@@ -755,7 +761,7 @@ impl Parser<'_> {
                 "texture_matrix"
             }
             b'X' | b'l' | b'L' | b'G' | b'C' | b'c' | b'T' | b'x' => {
-                r.primitive = Some(self.primitive(op, d, c)?);
+                r.primitive = Some(Box::new(self.primitive(op, d, c)?));
                 match op {
                     b'X' => "marker",
                     b'l' => "line",
@@ -768,7 +774,7 @@ impl Parser<'_> {
                 }
             }
             b'S' => {
-                r.shell = Some(self.shell(d, c)?);
+                r.shell = Some(Box::new(self.shell(d, c)?));
                 "shell"
             }
             b'%' | b'&' => {
@@ -779,23 +785,33 @@ impl Parser<'_> {
                     "repeat_object"
                 }
             }
+            b'0' => {
+                // TKE_Priority: one i32 drawing priority for the open segment. It
+                // orders rendering only and never changes geometry or placement.
+                r.payload = Some(c.take(d, 4)?);
+                "priority"
+            }
             b'~' => {
                 r.value = Some(self.color_mask(c)?);
                 r.payload = Some(c.take(d, 3)?);
                 "color_rgb"
             }
             b'H' | b'F' | b'"' => {
-                r.rendering = Some(self.rendering(op, d, c)?);
+                r.rendering = Some(Box::new(self.rendering(op, d, c)?));
                 match op { b'H' => "heuristics", b'F' => "text_font", _ => "color" }
             }
-            b'R' => { r.rendering = Some(self.render_options(d, c)?); "rendering_options" }
+            b'R' => { r.rendering = Some(Box::new(self.render_options(d, c)?)); "rendering_options" }
             b'@' | b'-' | 0x0d => {
-                r.named_style = Some(self.named_style(op, d, c)?);
+                r.named_style = Some(Box::new(self.named_style(op, d, c)?));
                 match op { b'@' => "marker_symbol", b'-' => "line_pattern", _ => "edge_pattern" }
             }
             b'*' => { r.value = Some(u32::from(c.u8()?)); "text_alignment" }
-            b'O' => { r.clip_region = Some(self.clip_region(d, c)?); "clip_region" }
-            b'n' => { r.user_index = Some(self.user_index(d, c)?); "user_index" }
+            b'O' => { r.clip_region = Some(Box::new(self.clip_region(d, c)?)); "clip_region" }
+            b'n' => { r.user_index = Some(Box::new(self.user_index(d, c)?)); "user_index" }
+            b'm' => {
+                r.user_index_data = Some(Box::new(self.user_index_data(d, c)?));
+                "user_index_data"
+            }
             b'V' => {
                 let mut mask = u32::from(c.u8()?);
                 let value_at = c.pos;
@@ -829,7 +845,7 @@ impl Parser<'_> {
                 // interleaved with mask bytes and exposed by the typed layout.
                 r.payload = Some(span(d, value_at, 1));
                 r.value = Some(mask);
-                r.visibility = Some(VisibilityLayout { mask, value });
+                r.visibility = Some(Box::new(VisibilityLayout { mask, value }));
                 "visibility"
             }
             b'J' => {
@@ -842,7 +858,7 @@ impl Parser<'_> {
                 let name = self.payload(d, c, length)?;
                 let length = u64::from(c.u16()?);
                 let definition = self.payload(d, c, length)?;
-                r.line_style = Some(LineStyleLayout { name, definition });
+                r.line_style = Some(Box::new(LineStyleLayout { name, definition }));
                 "line_style"
             }
             b'j' => {
@@ -855,7 +871,7 @@ impl Parser<'_> {
                 let name = self.payload(d, c, length)?;
                 let length = u64::from(c.u16()?);
                 let definition = self.payload(d, c, length)?;
-                r.glyph = Some(GlyphLayout { name, definition });
+                r.glyph = Some(Box::new(GlyphLayout { name, definition }));
                 "glyph"
             }
             b'f' => {
@@ -872,7 +888,7 @@ impl Parser<'_> {
                 // SDK binary reader uses signed int, despite the HTML Byte table.
                 let length = u64::from(c.nonnegative()?);
                 let data = self.payload(d, c, length)?;
-                r.font = Some(FontLayout { format, name, encoding, lookup, data });
+                r.font = Some(Box::new(FontLayout { format, name, encoding, lookup, data }));
                 "font"
             }
             b'+' | b'=' | 0x0e => {
@@ -888,9 +904,9 @@ impl Parser<'_> {
                         "Unknown size units"));
                 }
                 let layout = Some(MarkerSizeLayout { value_bits, units });
-                if op == b'+' { r.marker_size = layout; "marker_size" }
-                else if op == b'=' { r.line_weight = layout; "line_weight" }
-                else { r.edge_weight = layout; "edge_weight" }
+                if op == b'+' { r.marker_size = layout.map(Box::new); "marker_size" }
+                else if op == b'=' { r.line_weight = layout.map(Box::new); "line_weight" }
+                else { r.edge_weight = layout.map(Box::new); "edge_weight" }
             }
             0 if !compressed => "termination",
             b'z' if compressed => "stop_compression",
@@ -1081,7 +1097,7 @@ impl Parser<'_> {
                         self.diagnostics.push(diagnostic);
                         c.pos = at + end.expect("validated end") + 1;
                         r.payload = Some(span(d, at + 5, layout.computed_payload_length as usize));
-                        r.user_data = Some(layout);
+                        r.user_data = Some(Box::new(layout));
                         r.kind = "experimental_user_data".into();
                         return Ok(());
                     }

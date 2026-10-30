@@ -615,3 +615,110 @@ fn best_effort_placement_is_an_explicit_partial_estimate() {
     assert_eq!(clean.status, Status::Complete);
     assert_eq!(clean.data.placement_status, Status::Complete);
 }
+
+#[test]
+fn traversal_subtree_places_one_branch_and_skip_places_nothing() {
+    // def holds the mesh; a, b and a/x each include it. All: 1 (def) + 3.
+    let mut body = b"(\x03def".to_vec();
+    body.extend(shell(&QUAD, &[3, 0, 1, 2], 8, 0, false));
+    body.extend(b")(\x01a<\x04/def(\x01x<\x04/def))(\x01b<\x04/def)");
+    let options = |traversal: Traversal| SceneOptions {
+        mode: ParseMode::Partial,
+        traversal,
+        ..Default::default()
+    };
+    let all = read_with(&body, options(Traversal::All)).unwrap();
+    assert_eq!(all.data.instances.len(), 4);
+    assert_eq!(all.status, Status::Complete);
+
+    let a = read_with(&body, options(Traversal::Subtree("/A".into()))).unwrap();
+    assert_eq!(a.data.nodes.len(), all.data.nodes.len());
+    assert_eq!(a.data.meshes.len(), 1);
+    let node_a = a
+        .data
+        .nodes
+        .iter()
+        .find(|n| n.name.as_deref() == Some("a"))
+        .unwrap();
+    assert_eq!(a.data.instances.len(), 2);
+    assert!(a.data.instances.iter().all(|i| i.path.contains(&node_a.id)));
+    assert_eq!(a.status, Status::Partial);
+    assert_eq!(a.data.placement_status, Status::Partial);
+    assert_eq!(a.diagnostics.len(), 1);
+    assert_eq!(a.diagnostics[0].code, "hsf.traversal_subtree");
+    assert_eq!(a.diagnostics[0].severity, "info");
+
+    // A nested subtree places only its own include; ancestors place nothing.
+    let x = read_with(&body, options(Traversal::Subtree("/a/x".into()))).unwrap();
+    assert_eq!(x.data.instances.len(), 1);
+    let node_x = x
+        .data
+        .nodes
+        .iter()
+        .find(|n| n.name.as_deref() == Some("x"))
+        .unwrap();
+    assert_eq!(
+        x.data.instances[0].path.last(),
+        Some(&x.data.meshes[0].owner_node_id)
+    );
+    assert!(x.data.instances[0].path.contains(&node_x.id));
+    // The definition itself is a root child: selecting it places it once.
+    let def = read_with(&body, options(Traversal::Subtree("/def".into()))).unwrap();
+    assert_eq!(def.data.instances.len(), 1);
+
+    // "/a/.." normalizes to the root, which places everything like All.
+    let via_root = read_with(&body, options(Traversal::Subtree("/a/..".into()))).unwrap();
+    assert_eq!(via_root.data.instances.len(), 4);
+    assert_eq!(via_root.diagnostics[0].code, "hsf.traversal_subtree");
+    // Unknown, relative or alias paths place nothing; strict mode rejects them.
+    for path in ["/nope", "a", "?Include Library/x", "/a/b"] {
+        let unknown = read_with(&body, options(Traversal::Subtree(path.into()))).unwrap();
+        assert!(unknown.data.instances.is_empty(), "{path}");
+        assert_eq!(unknown.data.placement_status, Status::Unsupported);
+        assert_eq!(
+            unknown.diagnostics.last().unwrap().code,
+            "hsf.traversal_root_unknown"
+        );
+        let strict = read_with(
+            &body,
+            SceneOptions {
+                mode: ParseMode::Strict,
+                traversal: Traversal::Subtree(path.into()),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+        assert_eq!(strict.diagnostic.code, "hsf.traversal_root_unknown");
+    }
+    let skipped = read_with(&body, options(Traversal::Skip)).unwrap();
+    assert!(skipped.data.instances.is_empty());
+    assert_eq!(skipped.data.nodes.len(), all.data.nodes.len());
+    assert_eq!(skipped.data.placement_status, Status::Unsupported);
+    assert!(skipped.diagnostics.is_empty());
+    assert!(
+        capabilities()
+            .scene_features
+            .iter()
+            .any(|c| c == "traversal_subtree")
+    );
+}
+
+#[test]
+fn user_option_text_decodes_syntax_records_like_the_scene() {
+    let body = b"(\x01aU\x03\0k=v\x16\x03\0k\0=\0w\0h\x01)";
+    let mut budget = Budget::new(Limits::default());
+    let parsed = parse(&file(body), &ParseOptions::default(), &mut budget).unwrap();
+    let texts: Vec<Option<String>> = parsed
+        .data
+        .records
+        .iter()
+        .map(|r| {
+            user_option_text(&parsed.data, r, &mut budget)
+                .unwrap()
+                .and_then(|t| t.value)
+        })
+        .collect();
+    assert_eq!(texts[1].as_deref(), Some("k=v"));
+    assert_eq!(texts[2].as_deref(), Some("k=w"));
+    assert!(texts[0].is_none() && texts[3].is_none());
+}

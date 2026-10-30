@@ -12,6 +12,12 @@ pub struct RenderingLayout {
     pub mask: u64,
     /// Heuristics/Text Font/Rendering Options values; Color channel mask.
     pub value: u64,
+    /// Rendering Options only: the third mask/value word (TKO_Rendo_Extended2),
+    /// zero when absent. Other records never set it.
+    #[serde(default)]
+    pub extended2_mask: u32,
+    #[serde(default)]
+    pub extended2_value: u32,
     pub fields: Vec<OperandField>,
 }
 
@@ -319,6 +325,8 @@ impl Parser<'_> {
         Ok(RenderingLayout {
             mask: u64::from(mask),
             value: u64::from(value),
+            extended2_mask: 0,
+            extended2_value: 0,
             fields,
         })
     }

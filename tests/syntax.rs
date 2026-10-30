@@ -276,3 +276,152 @@ fn bounds_keep_float_bits_and_unknown_representation_stops() {
     assert_eq!(p.diagnostics[0].code, "hsf.unsupported_bounds");
     assert_eq!(p.unparsed[0].offset, 15);
 }
+
+#[test]
+fn priority_is_framed_and_ignored_by_the_scene() {
+    // TKE_Priority ('0') carries one i32; eDrawings 2026 writes it before
+    // component segments. It orders drawing only and never affects placement.
+    let body = b"(\x01a0\x05\x00\x00\x00(\x01b0\xff\xff\xff\xff))\0";
+    let p = read(&file(body), ParseMode::Strict).unwrap();
+    assert_eq!(p.status, Status::Complete);
+    assert!(p.unparsed.is_empty());
+    let priorities: Vec<_> = p
+        .data
+        .records
+        .iter()
+        .filter(|r| r.kind == "priority")
+        .collect();
+    assert_eq!(priorities.len(), 2);
+    assert_eq!(priorities[0].opcode, b'0');
+    let payload = priorities[0].payload.as_ref().unwrap();
+    assert_eq!(payload.length, 4);
+    assert_eq!(
+        p.data.source_bytes(payload).unwrap(),
+        [5u8, 0, 0, 0].as_slice()
+    );
+    let s = scene(
+        &p,
+        &SceneOptions {
+            mode: ParseMode::Strict,
+            ..Default::default()
+        },
+        &mut Budget::new(Limits::default()),
+    )
+    .unwrap();
+    assert_eq!(s.status, Status::Complete);
+    assert_eq!(s.data.nodes.len(), 3);
+    assert!(s.diagnostics.is_empty());
+    // A cut operand is invalid, never a partial success.
+    for mode in [ParseMode::Partial, ParseMode::Strict] {
+        let e = read(&file(b"(\x01a0\x05\x00"), mode).unwrap_err();
+        assert_eq!(e.diagnostic.classification, Status::Invalid);
+    }
+    assert!(capabilities().syntax_opcodes.contains(&b'0'));
+}
+
+#[test]
+fn rendering_options_third_mask_word_is_framed() {
+    // eDrawings 2026 (3DF 20.10 writer, 19.10 header): mask words 0x80010000,
+    // 0x80000000 (TKO_Rendo_Extended2), 0x00000002 (frame buffer effects), then
+    // the three value words and the display list level byte.
+    let r = b"R\x00\x00\x01\x80\x00\x00\x00\x80\x02\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x02\x00\x00\x00\x01";
+    let body = [b"(\x01a".as_slice(), r, b")\0"].concat();
+    let p = read(&file(&body), ParseMode::Strict).unwrap();
+    assert_eq!(p.status, Status::Complete);
+    assert!(p.unparsed.is_empty());
+    let record = p
+        .data
+        .records
+        .iter()
+        .find(|r| r.kind == "rendering_options")
+        .unwrap();
+    let layout = record.rendering.as_ref().unwrap();
+    assert_eq!(layout.mask, 0x80000000_80010000);
+    assert_eq!(layout.value, 0x00000000_00010000);
+    assert_eq!(layout.extended2_mask, 2);
+    assert_eq!(layout.extended2_value, 2);
+    assert_eq!(layout.fields.len(), 1);
+    assert_eq!(layout.fields[0].name, "display_list_level");
+    assert_eq!(
+        p.data.source_bytes(&layout.fields[0].source).unwrap(),
+        [1u8].as_slice()
+    );
+    // Records without the second word keep the third at zero.
+    let plain = b"(\x01bR\x00\x00\x01\x00\x00\x00\x01\x00\x01)\0";
+    let p = read(&file(plain), ParseMode::Strict).unwrap();
+    let layout = p
+        .data
+        .records
+        .iter()
+        .find(|r| r.kind == "rendering_options")
+        .unwrap()
+        .rendering
+        .as_ref()
+        .unwrap();
+    assert_eq!((layout.extended2_mask, layout.extended2_value), (0, 0));
+    // Third-word options with operands have an unverified position: stop there.
+    let contour = b"(\x01aR\x00\x00\x00\x80\x00\x00\x00\x80\x08\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x08\x00\x00\x00)\0";
+    let p = read(&file(contour), ParseMode::Partial).unwrap();
+    assert_eq!(p.status, Status::Partial);
+    assert_eq!(p.diagnostics[0].code, "hsf.rendering_options_mask");
+    assert_eq!(p.unparsed[0].offset, 18);
+}
+
+#[test]
+fn user_index_data_is_framed_per_entry() {
+    // TKE_User_Index_Data ('m', HSF 17.80+ toolkits): count, then per entry an
+    // index, a size and that many bytes. eDrawings 2026 stores the display name
+    // under the index spelled "name"; the bytes stay opaque here.
+    let body =
+        b"(\x01am\x02\x00\x00\x00name\x04\x00\x00\x00Pin\0\x01\x00\x00\x00\x02\x00\x00\x00\xaa\xbb)\0";
+    let p = read(&file(body), ParseMode::Strict).unwrap();
+    assert_eq!(p.status, Status::Complete);
+    assert!(p.unparsed.is_empty());
+    let r = p
+        .data
+        .records
+        .iter()
+        .find(|r| r.kind == "user_index_data")
+        .unwrap();
+    assert_eq!(r.opcode, b'm');
+    let layout = r.user_index_data.as_ref().unwrap();
+    assert_eq!(layout.count, 2);
+    assert_eq!(layout.entries.len(), 2);
+    assert_eq!(layout.entries[0].index, i32::from_le_bytes(*b"name"));
+    assert_eq!(
+        p.data.source_bytes(&layout.entries[0].data).unwrap(),
+        b"Pin\0".as_slice()
+    );
+    assert_eq!(layout.entries[1].index, 1);
+    assert_eq!(
+        p.data.source_bytes(&layout.entries[1].data).unwrap(),
+        [0xaau8, 0xbb].as_slice()
+    );
+    let s = scene(
+        &p,
+        &SceneOptions {
+            mode: ParseMode::Strict,
+            ..Default::default()
+        },
+        &mut Budget::new(Limits::default()),
+    )
+    .unwrap();
+    assert_eq!(s.status, Status::Complete);
+    assert_eq!(s.data.user_index_data.len(), 1);
+    assert_eq!(s.data.user_index_data[0].node_id, s.data.nodes[1].id);
+    assert_eq!(
+        s.data.user_index_data[0].interpretation_status,
+        Status::Unsupported
+    );
+    assert_eq!(s.data.user_index_data[0].layout.entries.len(), 2);
+    // A cut entry or a negative size is invalid, never a different layout.
+    bad(
+        b"(\x01am\x01\x00\x00\x00name\x04\x00\x00\x00Pi",
+        "hsf.truncated_operand",
+    );
+    bad(
+        b"(\x01am\x01\x00\x00\x00name\xff\xff\xff\xff)",
+        "hsf.negative_count",
+    );
+    assert!(capabilities().syntax_opcodes.contains(&b'm'));
+}

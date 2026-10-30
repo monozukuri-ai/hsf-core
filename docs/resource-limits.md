@@ -22,7 +22,7 @@ serialization and unrelated application allocations are not automatically
 accounted for. Bound file/container reads before allocating them.
 
 Output accounting includes payloads and conservative metadata charges (including
-2048 bytes per syntax record and 512 per domain), along with geometry, temporary
+about 650 bytes per syntax record (the record struct plus its id, kind, scope and span strings; framed layouts are boxed and charged where they are read) and 512 per domain), along with geometry, temporary
 buffers, display copies and traversal workspaces. It is an import budget, not a
 process RSS limit or a downstream serialization-size guarantee.
 

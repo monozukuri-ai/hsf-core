@@ -10,8 +10,19 @@ strict/partial behavior.
 
 Supported structural records include termination, comments, file/bounding
 information, segment open/close/reopen, includes, styles, references, implicit
-tags, user options/values/indices, Pause and start/stop compression. Some records
-are framed even when their scene semantics remain unsupported.
+tags, user options/values/indices, user index data, segment priority, Pause and
+start/stop compression. Some records are framed even when their scene semantics
+remain unsupported; Priority (`0`, one i32) is framed and retained but ignored by
+the scene, since it orders drawing only. User Index Data (`m`, HSF 17.80+
+toolkits) is framed as a count followed by interleaved (index, size, bytes)
+entries and listed per segment with opaque bytes; producers assign the index
+meanings (eDrawings 2026 keeps display names under the index spelled `name`).
+
+Rendering Options frame up to three mask/value words: the second follows when
+bit 31 of the first is set, the third when bit 31 of the second
+(`TKO_Rendo_Extended2`) is set, as written by 3DF 20.10 toolkits behind 19.10
+headers. Options whose operand position is unverified stop the parse with
+`hsf.rendering_options_mask`; switches without operands are accepted.
 
 Multiple alternating compressed/uncompressed blocks are supported. Internal
 compression uses zlib; nested compression is unsupported. Stop Compression must

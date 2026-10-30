@@ -1,6 +1,6 @@
 [package]
 name = "hsf-core"
-version = "0.1.0-alpha.2"
+version = "0.1.0-alpha.3"
 edition = "2024"
 rust-version = "1.88"
 description = "Bounded, independent HSF syntax and generic scene reader"
@@ -13,7 +13,7 @@ categories = ["parser-implementations", "graphics"]
 exclude = ["/.internal/**"]
 
 [dependencies]
-serde = { version = "1", features = ["derive"] }
+serde = { version = "1", features = ["derive", "rc"] }
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 sha2 = "0.10"
 

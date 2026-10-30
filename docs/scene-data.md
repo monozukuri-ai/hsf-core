@@ -25,6 +25,20 @@ state. The result is always partial and strict mode rejects the policy
 (`hsf.placement_policy_rejected`). Treat those instances as estimates to verify
 against the producing application, never as proof of arrangement.
 
+`SceneOptions.traversal` chooses what the traversal places. `All` (default)
+walks everything reachable from the file root. `Subtree("/path")` places only
+the subtree at that absolute literal segment path plus whatever it includes or
+references: ancestors contribute inherited attributes but place nothing of
+their own, sibling branches place nothing, and nodes, definitions and
+inventories still cover the whole file. The info diagnostic
+`hsf.traversal_subtree` records the choice, so the result is partial; an unknown
+path places nothing and reports `hsf.traversal_root_unknown` (an error in strict
+mode). `Skip` builds the inventory without any placement. Producers that save
+several configurations as root children (eDrawings `configN`) are read one
+configuration at a time this way instead of placing every configuration.
+`user_option_text()` decodes a `U`/Unicode Options syntax record the way the
+scene does, for callers that select the subtree before building the scene.
+
 `Mesh.owner_node_id` and `Primitive.owner_node_id` identify the defining segment.
 Includes, references and repeats preserve that owner. A supported Null Shell
 refinement keeps its target's owner; `refinement.context_node_id` identifies
@@ -61,11 +75,15 @@ without concatenation, and never changes geometry coordinates.
 ## Segments, paths and styles
 
 Unquoted ASCII literal paths use case-insensitive names, collapsed/trimmed spaces
-and `.`/`..`/`^` navigation. Source spelling is retained. Open Segment can create
-missing literal parents with `implicit = true` and the creating record's source;
-Close returns to the original scope. Anonymous segments are supported, but
-relative paths from them are not. Quotes, wildcards, path lists, unknown aliases
-and non-ASCII names remain unsupported.
+and `.`/`..`/`^` navigation. A component wrapped in backquotes is a literal
+name: the quotes are not part of it, its spacing is kept, and navigation, alias
+and wildcard meanings do not apply inside; a literal that would read as
+navigation is stored re-quoted. Source spelling is retained. Open Segment can
+create missing literal parents with `implicit = true` and the creating record's
+source; Close returns to the original scope. Anonymous segments are supported,
+but relative paths from them are not. Slashes or nested quotes inside quotes,
+text glued to a quote, wildcards, path lists, unknown aliases and non-ASCII
+names remain unsupported.
 
 Paths that climb above the file root are unsupported unless
 `SceneOptions.mount_path` names the absolute runtime path at which the producer

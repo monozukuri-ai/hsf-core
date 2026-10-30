@@ -110,7 +110,7 @@ impl Builder<'_> {
             } else {
                 Status::Unsupported
             };
-            self.data.nodes[n].display.marker_symbol = Some(Attribute {
+            self.display_mut(n)?.marker_symbol = Some(Attribute {
                 source: r.source.clone(),
                 value: MarkerSymbol {
                     binding: None,
@@ -154,9 +154,9 @@ impl Builder<'_> {
             // Even an unknown value replaces old local state, preventing stale
             // known values from masquerading as the current assignment.
             if r.opcode == b'-' {
-                self.data.nodes[n].display.line_pattern = attribute;
+                self.display_mut(n)?.line_pattern = attribute;
             } else {
-                self.data.nodes[n].display.edge_pattern = attribute;
+                self.display_mut(n)?.edge_pattern = attribute;
             }
         }
         let pending = layout.name.is_some();

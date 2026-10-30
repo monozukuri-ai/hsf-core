@@ -435,15 +435,28 @@ impl Builder<'_> {
             let event = &mut self.data.rendering_options[pending.event];
             event.interpretation_status = binding.status.clone();
             event.line_style_binding = Some(binding.clone());
-            let attr = if event.kind == "line_pattern" {
-                &mut self.data.nodes[pending.node].display.line_pattern
+            let event_source = event.source.clone();
+            let is_line = event.kind == "line_pattern";
+            let display = &self.data.nodes[pending.node].display;
+            let has_attribute = if is_line {
+                display.line_pattern.is_some()
             } else {
-                &mut self.data.nodes[pending.node].display.edge_pattern
+                display.edge_pattern.is_some()
             };
-            if let Some(attr) = attr.as_mut().filter(|a| a.source == event.source) {
-                attr.value.pattern = reason.is_none().then(|| "custom".into());
-                attr.value.interpretation_status = binding.status.clone();
-                attr.value.binding = Some(binding);
+            // Only nodes that set the pattern own attributes to update; the shared
+            // empty value is never copied for a lookup.
+            if has_attribute {
+                let display = self.display_mut(pending.node)?;
+                let attr = if is_line {
+                    &mut display.line_pattern
+                } else {
+                    &mut display.edge_pattern
+                };
+                if let Some(attr) = attr.as_mut().filter(|a| a.source == event_source) {
+                    attr.value.pattern = reason.is_none().then(|| "custom".into());
+                    attr.value.interpretation_status = binding.status.clone();
+                    attr.value.binding = Some(binding);
+                }
             }
             if let Some(reason) = reason {
                 let mut e = error(
@@ -452,12 +465,8 @@ impl Builder<'_> {
                     "Named pattern effects are not evaluated under the unique file-root profile; source values are retained and placements are withheld",
                 );
                 e.diagnostic.stage = "scene".into();
-                e.diagnostic.source = Some(event.source.clone());
-                e.diagnostic.opcode = Some(if event.kind == "line_pattern" {
-                    b'-'
-                } else {
-                    13
-                });
+                e.diagnostic.source = Some(event_source);
+                e.diagnostic.opcode = Some(if is_line { b'-' } else { 13 });
                 e.diagnostic.version = Some(self.doc.header.version.text.clone());
                 e.diagnostic.impact = Some(reason.into());
                 if self.options.mode == ParseMode::Strict {

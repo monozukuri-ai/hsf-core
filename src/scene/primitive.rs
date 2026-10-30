@@ -1,4 +1,5 @@
 use super::*;
+use std::sync::Arc;
 
 #[derive(Clone, Debug, Serialize)]
 pub struct TextValue {
@@ -106,7 +107,7 @@ pub struct PrimitiveInstance {
     pub path: Vec<String>,
     pub world_transform: Matrix,
     pub determinant: f64,
-    pub display: DisplayAttributes,
+    pub display: Arc<DisplayAttributes>,
 }
 #[derive(Clone, Debug, Serialize)]
 pub struct UserOptions {
@@ -264,7 +265,7 @@ pub(super) fn decode(
         });
     }
     let layout = r.primitive.as_ref().expect("primitive framing");
-    budget.charge_output(2048 + u64::from(layout.point_count) * 12)?;
+    budget.charge_output(512 + u64::from(layout.point_count) * 12)?;
     let points = doc
         .source_bytes(&layout.points)
         .expect("framed points")
