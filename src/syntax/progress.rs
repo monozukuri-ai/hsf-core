@@ -171,14 +171,19 @@ impl Parser<'_> {
             if opcode == 0 {
                 break;
             }
+            // 28 has the layout of 27 (width, then a float per vertex and
+            // component), observed in HSF 20.90 shells with widths 2 and 5. Its
+            // meaning is not established, so it is its own family and the scene
+            // reports it as an unsupported attribute.
             let family = match opcode {
                 1 | 17 => 0,
                 3 | 27 => 1,
                 99 => 2,
+                28 => 3,
                 _ => {
                     return Err(unsupported(
                         "hsf.shell_attribute",
-                        "Unsupported Shell attribute",
+                        &format!("Unsupported Shell attribute {opcode}"),
                     ));
                 }
             };
@@ -186,6 +191,7 @@ impl Parser<'_> {
                 let previous = match a.opcode {
                     1 | 17 => 0,
                     3 | 27 => 1,
+                    28 => 3,
                     _ => 2,
                 };
                 previous == family
@@ -309,7 +315,7 @@ impl Parser<'_> {
                         usize::from(width) * 8,
                     )?;
                 }
-                if opcode == 27 {
+                if matches!(opcode, 27 | 28) {
                     let source = c.array(d, count, u32::from(width) * 4)?;
                     finite(
                         &c.data[source.offset as usize..c.pos],

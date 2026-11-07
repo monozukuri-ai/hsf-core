@@ -45,15 +45,18 @@ impl Parser<'_> {
             ));
         }
         let version = &self.document.header.version;
-        if (version.major, version.minor) != (19, 10) {
+        if !matches!((version.major, version.minor), (19, 10) | (20, 90)) {
             return Err(unsupported(
-                "The u32 RGBA JPEG profile is limited to HSF 19.10",
+                "The u32 RGBA JPEG profile is limited to HSF 19.10 and 20.90",
             ));
         }
         self.budget.charge_output(1024)?;
         let at = c.pos - 1;
+        // 20.90 puts its precision byte between the opcode and the position.
+        self.precision_byte(c, "hsf.image_profile")?;
+        let from = c.pos;
         let position = c.take(d, 12)?;
-        progress::finite(&c.data[at + 1..c.pos], "hsf.nonfinite_image")?;
+        progress::finite(&c.data[from..c.pos], "hsf.nonfinite_image")?;
         let format_options = c.u32()?;
         if format_options != 0xa3 {
             return Err(unsupported(

@@ -1,6 +1,6 @@
 # Supported features and limitations
 
-Syntax profiles are selected for HSF **8.05, 14.50 and 19.10**. Availability within
+Syntax profiles are selected for HSF **8.05, 14.50, 19.10 and 20.90**. Availability within
 a profile depends on record flags and operands. Unknown framing stops at the
 original opcode without searching for later markers. Use `capabilities()` for
 the current numeric opcode list and [Getting started](getting-started.md) for
@@ -23,6 +23,13 @@ bit 31 of the first is set, the third when bit 31 of the second
 (`TKO_Rendo_Extended2`) is set, as written by 3DF 20.10 toolkits behind 19.10
 headers. Options whose operand position is unverified stop the parse with
 `hsf.rendering_options_mask`; switches without operands are accepted.
+
+HSF 20.90 (SOLIDWORKS 2025 and 2026 eDrawings) puts one byte right after the
+opcode of bounds, cameras, views, modelling matrices, Shells, simple primitives,
+poly-polylines and images, before their single-precision operands. Only zero is
+accepted; any other value stops rather than guessing a double-precision layout.
+Include and style references start with a zero byte there and carry no
+condition. Otherwise the records are framed as in 19.10.
 
 Multiple alternating compressed/uncompressed blocks are supported. Internal
 compression uses zlib; nested compression is unsupported. Stop Compression must

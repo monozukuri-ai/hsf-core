@@ -21,7 +21,7 @@ pub const SYNTAX_OPCODES: &[u8] = &[
     b'+', b'H', b'F', b'"', b'=', 0x0e, b'@', b'*', b'R', b'O', b'n', b'-', 0x0d, 1, b't', b'>',
     b'?', 8, 9, b'M', b'X', b'$', 0x10, b'G', 0x0c, b'i', b'j', b'0', b'm',
 ];
-pub const SYNTAX_VERSIONS: &[(u16, u16)] = &[(8, 5), (14, 50), (19, 10)];
+pub const SYNTAX_VERSIONS: &[(u16, u16)] = &[(8, 5), (14, 50), (19, 10), (20, 90)];
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -726,6 +726,7 @@ impl Parser<'_> {
                 "handedness"
             }
             b'}' | b'>' => {
+                self.precision_byte(c, if op == b'}' { "hsf.unsupported_view_projection" } else { "hsf.unsupported_camera_projection" })?;
                 let projection = c.u8()?;
                 if projection & !0x1f != 0 {
                     return Err(error(if op == b'}' { "hsf.unsupported_view_projection" } else { "hsf.unsupported_camera_projection" }, Status::Unsupported,
@@ -751,6 +752,7 @@ impl Parser<'_> {
                 }
             }
             0x10 => {
+                self.precision_byte(c, "hsf.unsupported_primitive_precision")?;
                 r.poly_polyline = Some(Box::new(self.poly_polyline(d,c)?));
                 "poly_polyline"
             }
@@ -761,6 +763,7 @@ impl Parser<'_> {
                 "texture_matrix"
             }
             b'X' | b'l' | b'L' | b'G' | b'C' | b'c' | b'T' | b'x' => {
+                self.precision_byte(c, "hsf.unsupported_primitive_precision")?;
                 r.primitive = Some(Box::new(self.primitive(op, d, c)?));
                 match op {
                     b'X' => "marker",
@@ -774,10 +777,14 @@ impl Parser<'_> {
                 }
             }
             b'S' => {
+                self.precision_byte(c, "hsf.unsupported_shell_precision")?;
                 r.shell = Some(Box::new(self.shell(d, c)?));
                 "shell"
             }
             b'%' | b'&' => {
+                if op == b'%' {
+                    self.precision_byte(c, "hsf.unsupported_matrix_precision")?;
+                }
                 r.payload = Some(c.take(d, if op == b'%' { 48 } else { 65 })?);
                 if op == b'%' {
                     "modelling_matrix"
@@ -829,10 +836,12 @@ impl Parser<'_> {
                     mask |= u32::from(c.u8()?) << 24;
                     value |= u32::from(c.u8()?) << 24;
                 }
-                // Observed in the 2026 DXF writer. The fixed-width second
-                // extension frames this bit, but its geometry meaning is not
-                // established. Scene evaluation retains it as opaque state.
-                let opaque = if self.document.header.version.text == "19.10" {
+                // Observed in the 2026 DXF writer, and in SOLIDWORKS 2025–2026
+                // eDrawings at HSF 20.90. The fixed-width second extension
+                // frames this bit, but its geometry meaning is not established.
+                // Scene evaluation retains it as opaque state.
+                let v = &self.document.header.version;
+                let opaque = if matches!((v.major, v.minor), (19, 10) | (20, 90)) {
                     0x0400_0000
                 } else {
                     0
@@ -959,6 +968,7 @@ impl Parser<'_> {
                 "file_info"
             }
             b'B' | b'b' => {
+                self.precision_byte(c, "hsf.unsupported_bounds")?;
                 let kind = c.u8()?;
                 let length = match kind {
                     0 => 24,
@@ -1005,19 +1015,34 @@ impl Parser<'_> {
                 "tag_implicit"
             }
             b'<' | b'{' => {
-                let mut n = c.u8()?;
-                let conditional = n == 0
-                    && (
-                        self.document.header.version.major,
-                        self.document.header.version.minor,
-                    ) >= (11, 50);
-                if conditional {
-                    n = c.u8()?;
-                }
-                r.payload = Some(self.payload(d, c, n as u64)?);
-                if conditional {
+                let version = (
+                    self.document.header.version.major,
+                    self.document.header.version.minor,
+                );
+                if version >= (20, 90) {
+                    // 20.90 always writes a leading zero, then the path; no
+                    // condition follows (`< 00 1d /include library/…` then `)`).
+                    // A nonzero first byte is unobserved and stops.
+                    if c.u8()? != 0 {
+                        return Err(error(
+                            "hsf.unsupported_conditional_segment",
+                            Status::Unsupported,
+                            "Only unconditional segment references are verified for HSF 20.90",
+                        ));
+                    }
                     let n = c.u8()?;
-                    r.condition = Some(self.payload(d, c, n as u64)?);
+                    r.payload = Some(self.payload(d, c, n as u64)?);
+                } else {
+                    let mut n = c.u8()?;
+                    let conditional = n == 0 && version >= (11, 50);
+                    if conditional {
+                        n = c.u8()?;
+                    }
+                    r.payload = Some(self.payload(d, c, n as u64)?);
+                    if conditional {
+                        let n = c.u8()?;
+                        r.condition = Some(self.payload(d, c, n as u64)?);
+                    }
                 }
                 if op == b'<' {
                     "include_segment"
@@ -1366,6 +1391,26 @@ impl Parser<'_> {
             normals,
             attributes,
         })
+    }
+    /// HSF 20.90 writes one byte right after the opcode of bounds, cameras,
+    /// views, modelling matrices, shells and the simple primitives (markers,
+    /// lines, polylines, polygons, circles, arcs and text), before their
+    /// single-precision operands (`S 00 90 …` against 19.10's `S 90 …`). Only
+    /// zero has been observed; any other value stops instead of guessing a
+    /// double-precision layout.
+    fn precision_byte(&self, c: &mut Cursor<'_>, code: &str) -> Result<(), HsfError> {
+        let version = (
+            self.document.header.version.major,
+            self.document.header.version.minor,
+        );
+        if version >= (20, 90) && c.u8()? != 0 {
+            return Err(error(
+                code,
+                Status::Unsupported,
+                "Only single-precision operands are verified for HSF 20.90",
+            ));
+        }
+        Ok(())
     }
     fn payload(&self, d: usize, c: &mut Cursor<'_>, n: u64) -> Result<SourceSpan, HsfError> {
         if n > self.options.max_string_bytes {

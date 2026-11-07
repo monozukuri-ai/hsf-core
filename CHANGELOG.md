@@ -1,6 +1,33 @@
 # Changelog
 
-## Unreleased (0.1.0-alpha.3, contract 35)
+## Unreleased (0.1.0-alpha.4, contract 36)
+
+SOLIDWORKS 2025 and 2026 write eDrawings as HSF 20.90, which alpha.3 refused at
+the header. Ten uploaded 20.90 files showed the differences below from 19.10;
+with them all ten parse to the end, and where a file stores real bounds the
+placed geometry matches them.
+
+- `20.90` joins the syntax profiles (`SYNTAX_VERSIONS`).
+- One byte follows the opcode of bounding (`B`, `b`), camera (`>`), view (`}`),
+  modelling matrix (`%`), shell (`S`), the simple primitives (`X`, `l`, `L`, `G`,
+  `C`, `c`, `T`, `x`), poly-polylines and images (`i`), before their
+  single-precision operands. Only zero has been observed; any other value stops
+  (`hsf.unsupported_bounds`, `hsf.unsupported_camera_projection`,
+  `hsf.unsupported_view_projection`, `hsf.unsupported_matrix_precision`,
+  `hsf.unsupported_shell_precision`, `hsf.unsupported_primitive_precision`,
+  `hsf.image_profile`). Payloads exclude the byte, so the scene reads them as
+  before.
+- Include (`<`) and style (`{`) references start with a zero byte and carry no
+  condition after the path, whereas a leading zero before 20.90 announces one.
+  A nonzero first byte stops with `hsf.unsupported_conditional_segment`.
+- Shell attribute 28 has the layout of 27: a width, then a float per vertex and
+  component (widths 2 and 5 observed). It is framed as its own family; the scene
+  still decodes the mesh and reports the attribute with `hsf.mesh_attributes`.
+- The 19.10 allowances for Visibility bit 26 and colour-lock selectors 25/26 and
+  the empirical image profile also apply to 20.90, where they were observed.
+- `hsf.shell_attribute` names the unsupported attribute code in its message.
+
+## 0.1.0-alpha.3 (contract 35)
 
 eDrawings 2026 (HOOPS 3DF 20.10 writer behind a 19.10 header) stopped alpha.2
 at four places; each is now framed from the shipped toolkit's grammar.

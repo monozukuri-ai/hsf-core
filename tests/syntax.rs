@@ -84,14 +84,14 @@ fn versioned_include_and_long_options() {
     let p = read(old, ParseMode::Strict).unwrap();
     assert!(p.data.records[0].condition.is_none());
     assert_eq!(p.data.records[0].payload.as_ref().unwrap().length, 0);
-    for version in ["8.05", "14.50", "19.10", "019.10"] {
+    for version in ["8.05", "14.50", "19.10", "019.10", "20.90"] {
         let data = format!(";; HSF V{version} \n\0");
         assert_eq!(
             read(data.as_bytes(), ParseMode::Strict).unwrap().status,
             Status::Complete
         );
     }
-    let data = b";; HSF V20.90 \n\0";
+    let data = b";; HSF V21.15 \n\0";
     assert_eq!(
         read(data, ParseMode::Partial).unwrap().status,
         Status::Partial

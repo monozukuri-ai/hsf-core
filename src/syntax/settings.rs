@@ -293,9 +293,10 @@ impl Parser<'_> {
             if locks & locked & 4 != 0 {
                 let cm = uint_field(d, c, &mut fields, "color_lock_mask", 4)?;
                 let cv = uint_field(d, c, &mut fields, "color_lock_value", 4)?;
-                // 19.10 files also set selector bits 25/26. The fixed SDK reader
-                // consumes no extra channel operands for them; retain them raw.
-                let known = if version == (19, 10) {
+                // 19.10 and 20.90 files also set selector bits 25/26. The fixed
+                // SDK reader consumes no extra channel operands for them; retain
+                // them raw.
+                let known = if matches!(version, (19, 10) | (20, 90)) {
                     0x077f7f7f
                 } else {
                     0x017f7f7f

@@ -76,7 +76,8 @@ placements. Defaults leave both authorizations absent.
 ## Experimental images
 
 `ParseOptions.image_profile = ImageProfile::U32RgbaJpegV1` enables a bounded
-empirical HSF 19.10 profile: finite XYZ, u32 flags 0xa3, a nonempty byte-length
+empirical HSF 19.10 and 20.90 profile (20.90 puts its zero byte before the XYZ):
+finite XYZ, u32 flags 0xa3, a nonempty byte-length
 name, positive i32 dimensions, JPEG data and constant/RLE alpha. The default is
 `ImageProfile::Disabled`; strict mode rejects the empirical profile. Partial
 mode emits `hsf.experimental_image` and never claims complete syntax.
