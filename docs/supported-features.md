@@ -1,6 +1,6 @@
 # Supported features and limitations
 
-Syntax profiles are selected for HSF **8.05, 14.50, 19.10 and 20.90**. Availability within
+Syntax profiles are selected for HSF **8.05, 14.50, 17.85, 18.00, 19.10, 20.90 and 21.15**. Availability within
 a profile depends on record flags and operands. Unknown framing stops at the
 original opcode without searching for later markers. Use `capabilities()` for
 the current numeric opcode list and [Getting started](getting-started.md) for
@@ -13,23 +13,28 @@ information, segment open/close/reopen, includes, styles, references, implicit
 tags, user options/values/indices, user index data, segment priority, Pause and
 start/stop compression. Some records are framed even when their scene semantics
 remain unsupported; Priority (`0`, one i32) is framed and retained but ignored by
-the scene, since it orders drawing only. User Index Data (`m`, HSF 17.80+
-toolkits) is framed as a count followed by interleaved (index, size, bytes)
-entries and listed per segment with opaque bytes; producers assign the index
-meanings (eDrawings 2026 keeps display names under the index spelled `name`).
+the scene, since it orders drawing only. Selectability (`!`, six masks) is
+framed and ignored likewise, since it governs picking only. User Index Data
+(`m`, HSF 17.80+ toolkits) is framed as a count followed by interleaved (index,
+size, bytes) entries and listed per segment with opaque bytes; producers assign
+the index meanings (eDrawings 2026 keeps display names under the index spelled
+`name`).
 
 Rendering Options frame up to three mask/value words: the second follows when
 bit 31 of the first is set, the third when bit 31 of the second
 (`TKO_Rendo_Extended2`) is set, as written by 3DF 20.10 toolkits behind 19.10
 headers. Options whose operand position is unverified stop the parse with
-`hsf.rendering_options_mask`; switches without operands are accepted.
+`hsf.rendering_options_mask`; switches without operands are accepted. Simple
+reflection is framed with the operands its options select.
 
 HSF 20.90 (SOLIDWORKS 2025 and 2026 eDrawings) puts one byte right after the
 opcode of bounds, cameras, views, modelling matrices, Shells, simple primitives,
 poly-polylines and images, before their single-precision operands. Only zero is
 accepted; any other value stops rather than guessing a double-precision layout.
 Include and style references start with a zero byte there and carry no
-condition. Otherwise the records are framed as in 19.10.
+condition. Otherwise the records are framed as in 19.10. HSF 21.15 (the Creo 11
+eDrawings publisher) is framed as 20.90; 17.85 and 18.00 (SOLIDWORKS 2011 and
+2012) follow the version-gated rules between 14.50 and 19.10.
 
 Multiple alternating compressed/uncompressed blocks are supported. Internal
 compression uses zlib; nested compression is unsupported. Stop Compression must
@@ -40,7 +45,7 @@ Pause preserves segment/tag state and does not substitute for termination.
 
 | Feature | Supported result | Boundary |
 | --- | --- | --- |
-| Shell | Uncompressed f32 points; CS_TRIVIAL 8/16/32-bit face values, including signed strips/fans | Quantized points, connectivity compression, collections and bounding-only Shells are unsupported |
+| Shell | Uncompressed f32 points, or trivially quantized points (2–31 bits within a stored box); CS_TRIVIAL 8/16/32-bit face values, including signed strips/fans | Other point compression, connectivity compression, collections and bounding-only Shells are unsupported |
 | Shell triangulation | Triangles, convex planar quads, strips and fans, with source-face indices | Holes, larger polygons and non-convex/non-planar/degenerate quads retain arrays but withhold all triangles for that mesh |
 | Rectangular Mesh | Uncompressed row-major points, flags 0/8, rows and columns at least 2; two triangles per cell | Other storage profiles and unknown attributes stop framing |
 | Null Shell | Placeholder identity plus a unique uncompressed LOD 0 refinement of an already tagged LOD 0 Null Shell | Duplicate updates revoke the binding; other targets and general LOD selection remain unsupported |

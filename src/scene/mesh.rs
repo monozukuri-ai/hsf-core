@@ -291,6 +291,31 @@ pub(super) fn vectors(
         })
         .collect()
 }
+/// Decode quantized Shell points: each coordinate's code spans its axis of the
+/// stored box, packed as quantized parameters are (`polyhedron::sample`). The
+/// syntax checked the box is finite and ordered and the codes cover every point.
+fn dequantized_points(doc: &HsfDocument, s: &ShellLayout, q: &PointQuantization) -> Vec<[f32; 3]> {
+    let corners: Vec<f32> = doc
+        .source_bytes(&q.bounds)
+        .expect("framed bounds")
+        .chunks_exact(4)
+        .map(|b| f32::from_le_bytes(b.try_into().expect("four bytes")))
+        .collect();
+    let codes = doc.source_bytes(&s.vertices).expect("framed codes");
+    (0..u64::from(s.vertex_count))
+        .map(|v| {
+            std::array::from_fn(|axis| {
+                polyhedron::sample(
+                    codes,
+                    v * 3 + axis as u64,
+                    3,
+                    q.bits_per_sample,
+                    [corners[axis], corners[axis + 3]],
+                )
+            })
+        })
+        .collect()
+}
 fn sub(a: [f32; 3], b: [f32; 3]) -> [f64; 3] {
     std::array::from_fn(|i| f64::from(a[i]) - f64::from(b[i]))
 }
@@ -342,7 +367,10 @@ pub(super) fn decode(
     // Includes vector capacity growth and retained metadata before allocation.
     budget
         .charge_output(1024 + u64::from(s.vertex_count) * 24 + u64::from(s.face_value_count) * 8)?;
-    let vertices = vectors(doc, &s.vertices, r)?;
+    let vertices = match &s.point_quantization {
+        Some(q) => dequantized_points(doc, s, q),
+        None => vectors(doc, &s.vertices, r)?,
+    };
     let (vertex_normals, normals) = polyhedron::normals(doc, r, budget)?;
     let entity_metadata = polyhedron::metadata(doc, r, budget)?;
     let signed = s.extended_flags & 4 != 0;

@@ -170,6 +170,8 @@ pub struct ShellParameterSet {
     pub node_id: String,
     pub source_record_id: String,
     pub source: SourceSpan,
+    /// The Shell's stored points: f32 XYZ, or the packed codes when its
+    /// `ShellLayout.point_quantization` is set.
     pub vertices_source: SourceSpan,
     pub refinement_index: Option<u32>,
     pub lod: u8,

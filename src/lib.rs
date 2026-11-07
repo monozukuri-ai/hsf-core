@@ -8,7 +8,7 @@ pub use syntax::*;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const SOURCE_SHA256: &str = env!("HSF_SOURCE_SHA256");
-pub const CONTRACT_VERSION: u32 = 36;
+pub const CONTRACT_VERSION: u32 = 37;
 pub const MAX_HEADER_BYTES: usize = 64;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -231,7 +231,7 @@ fn every_cut_invalid_and_geometry_validation_never_partial_success() {
 fn unsupported_shell_profiles_stop_at_the_shell_without_scanning() {
     for (prefix, code) in [
         (vec![b'S', 0x50], "hsf.shell_connectivity_compression"),
-        (vec![b'S', 0x11], "hsf.shell_quantized_points"),
+        (vec![b'S', 0x11, 0, 2], "hsf.shell_point_compression"),
         (vec![b'S', 0x90, 1, 0], "hsf.shell_flags"),
         (vec![b'~', 0x80, 0x80, 0x80, 0x80], "hsf.color_mask"),
     ] {

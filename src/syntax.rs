@@ -19,9 +19,17 @@ pub const SYNTAX_OPCODES: &[u8] = &[
     0, b';', b'I', b'B', b'b', b'(', b')', b's', b'<', b'{', b'r', b'q', b'U', b'v', b'Z', b'z',
     b'S', b'%', b'~', b'V', b'&', b'l', b'L', b'C', b'c', b'T', b'x', 0x16, b'h', b'}', b'J', b'f',
     b'+', b'H', b'F', b'"', b'=', 0x0e, b'@', b'*', b'R', b'O', b'n', b'-', 0x0d, 1, b't', b'>',
-    b'?', 8, 9, b'M', b'X', b'$', 0x10, b'G', 0x0c, b'i', b'j', b'0', b'm',
+    b'?', 8, 9, b'M', b'X', b'$', 0x10, b'G', 0x0c, b'i', b'j', b'0', b'm', b'!',
 ];
-pub const SYNTAX_VERSIONS: &[(u16, u16)] = &[(8, 5), (14, 50), (19, 10), (20, 90)];
+pub const SYNTAX_VERSIONS: &[(u16, u16)] = &[
+    (8, 5),
+    (14, 50),
+    (17, 85),
+    (18, 0),
+    (19, 10),
+    (20, 90),
+    (21, 15),
+];
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -236,12 +244,24 @@ pub struct ShellLayout {
     pub refinement_index: Option<u32>,
     pub lod: u8,
     pub vertex_count: u32,
+    /// f32 XYZ triples, or the packed codes when `point_quantization` is set.
     pub vertices: SourceSpan,
+    pub point_quantization: Option<PointQuantization>,
     pub face_value_count: u32,
     pub face_bits: u8,
     pub faces: SourceSpan,
     pub normals: Option<SourceSpan>,
     pub attributes: Vec<ShellAttributeLayout>,
+}
+
+/// Quantized Shell points: each coordinate is a `bits_per_sample` code spanning
+/// the box in `bounds` (min XYZ then max XYZ, six f32), packed like quantized
+/// parameters. The scene decodes them to the mesh's f32 vertices.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PointQuantization {
+    pub scheme: u8,
+    pub bits_per_sample: u8,
+    pub bounds: SourceSpan,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -798,6 +818,19 @@ impl Parser<'_> {
                 r.payload = Some(c.take(d, 4)?);
                 "priority"
             }
+            b'!' => {
+                // TKE_Selectability: a geometry mask (a second byte when bit 7 is
+                // set), then the down, up, move-down, move-up and invisible masks,
+                // two bytes each when extended and one otherwise. It governs
+                // picking only, so the scene ignores it.
+                let mut mask = u32::from(c.u8()?);
+                if mask & 0x80 != 0 {
+                    mask |= u32::from(c.u8()?) << 8;
+                }
+                r.value = Some(mask);
+                r.payload = Some(c.take(d, if mask & 0x80 != 0 { 10 } else { 5 })?);
+                "selectability"
+            }
             b'~' => {
                 r.value = Some(self.color_mask(c)?);
                 r.payload = Some(c.take(d, 3)?);
@@ -836,12 +869,13 @@ impl Parser<'_> {
                     mask |= u32::from(c.u8()?) << 24;
                     value |= u32::from(c.u8()?) << 24;
                 }
-                // Observed in the 2026 DXF writer, and in SOLIDWORKS 2025–2026
-                // eDrawings at HSF 20.90. The fixed-width second extension
-                // frames this bit, but its geometry meaning is not established.
-                // Scene evaluation retains it as opaque state.
+                // Observed in the 2026 DXF writer, in SOLIDWORKS 2025–2026
+                // eDrawings at HSF 20.90 and in the Creo 11 publisher's 21.15.
+                // The fixed-width second extension frames this bit, but its
+                // geometry meaning is not established. Scene evaluation retains
+                // it as opaque state.
                 let v = &self.document.header.version;
-                let opaque = if matches!((v.major, v.minor), (19, 10) | (20, 90)) {
+                let opaque = if matches!((v.major, v.minor), (19, 10) | (20, 90) | (21, 15)) {
                     0x0400_0000
                 } else {
                     0
@@ -1285,6 +1319,7 @@ impl Parser<'_> {
                 refinement_index: None,
                 vertex_count: 0,
                 vertices: empty.clone(),
+                point_quantization: None,
                 face_value_count: 0,
                 face_bits: 0,
                 faces: empty,
@@ -1300,13 +1335,6 @@ impl Parser<'_> {
                 "Compressed Shell connectivity is not implemented",
             ));
         }
-        if flags & 1 != 0 {
-            return Err(error(
-                "hsf.shell_quantized_points",
-                Status::Unsupported,
-                "Quantized Shell points are not implemented",
-            ));
-        }
         if flags & 32 != 0 || extended_flags & !4 != 0 {
             return Err(error(
                 "hsf.shell_flags",
@@ -1320,14 +1348,18 @@ impl Parser<'_> {
             None
         };
         let lod = c.u8()?;
-        let vertex_count = c.nonnegative()?;
-        charge(
-            &mut self.vertices,
-            vertex_count as u64,
-            self.options.max_vertices,
-            "hsf.limit_vertices",
-        )?;
-        let vertices = c.array(d, vertex_count, 12)?;
+        let (vertex_count, vertices, point_quantization) = if flags & 1 != 0 {
+            self.quantized_points(d, c)?
+        } else {
+            let vertex_count = c.nonnegative()?;
+            charge(
+                &mut self.vertices,
+                vertex_count as u64,
+                self.options.max_vertices,
+                "hsf.limit_vertices",
+            )?;
+            (vertex_count, c.array(d, vertex_count, 12)?, None)
+        };
         if c.u8()? != 1 {
             return Err(error(
                 "hsf.shell_face_encoding",
@@ -1385,12 +1417,77 @@ impl Parser<'_> {
             lod,
             vertex_count,
             vertices,
+            point_quantization,
             face_value_count,
             face_bits,
             faces,
             normals,
             attributes,
         })
+    }
+    /// Quantized Shell points (flag 1), in the reference reader's order: the
+    /// scheme (only 1, trivial), the point count, the box the codes span (min
+    /// then max XYZ), the bits per coordinate and the byte length of the codes,
+    /// packed as quantized parameters are. `vertices` then spans the codes.
+    fn quantized_points(
+        &mut self,
+        d: usize,
+        c: &mut Cursor<'_>,
+    ) -> Result<(u32, SourceSpan, Option<PointQuantization>), HsfError> {
+        if c.u8()? != 1 {
+            return Err(error(
+                "hsf.shell_point_compression",
+                Status::Unsupported,
+                "Only trivially quantized Shell points are supported",
+            ));
+        }
+        let vertex_count = c.nonnegative()?;
+        charge(
+            &mut self.vertices,
+            vertex_count as u64,
+            self.options.max_vertices,
+            "hsf.limit_vertices",
+        )?;
+        let at = c.pos;
+        let bounds = c.take(d, 24)?;
+        progress::finite(&c.data[at..c.pos], "hsf.nonfinite_shell")?;
+        let corners: Vec<f32> = c.data[at..c.pos]
+            .chunks_exact(4)
+            .map(|b| f32::from_le_bytes(b.try_into().expect("four bytes")))
+            .collect();
+        if (0..3).any(|i| corners[i] > corners[i + 3]) {
+            return Err(error(
+                "hsf.invalid_shell_point_bounds",
+                Status::Invalid,
+                "Quantized point minimum exceeds maximum",
+            ));
+        }
+        let bits = c.u8()?;
+        if !(2..=31).contains(&bits) {
+            return Err(error(
+                "hsf.shell_point_bits",
+                Status::Unsupported,
+                "Quantized point bit width must be 2..31",
+            ));
+        }
+        let length = c.nonnegative()?;
+        if u64::from(length) != progress::packed_length(vertex_count, 3, bits) {
+            return Err(error(
+                "hsf.invalid_shell_point_length",
+                Status::Invalid,
+                "Packed point length differs from count and bit width",
+            ));
+        }
+        let codes = c.array(d, length, 1)?;
+        Ok((
+            vertex_count,
+            codes,
+            Some(PointQuantization {
+                scheme: 1,
+                bits_per_sample: bits,
+                bounds,
+            }),
+        ))
     }
     /// HSF 20.90 writes one byte right after the opcode of bounds, cameras,
     /// views, modelling matrices, shells and the simple primitives (markers,

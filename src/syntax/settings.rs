@@ -234,6 +234,9 @@ impl Parser<'_> {
             | 0x8000
             | 0x10000
             | 0x20000
+            // Simple reflection: framed by `simple_reflection` (seen off, with no
+            // further operands, in SOLIDWORKS eDrawings at 19.10).
+            | 0x80000
             // Interpolation and depth-writing switches carry no operand (the SDK
             // class has no member for them): index markers, Gooch lighting,
             // transparency depth writing.
@@ -261,6 +264,7 @@ impl Parser<'_> {
             (0x8000, (14, 5)),
             (0x10000, (15, 5)),
             (0x20000, (15, 10)),
+            (0x80000, (15, 50)),
         ] {
             if high_mask & bits != 0 && version < minimum {
                 return Err(unsupported(
@@ -293,10 +297,10 @@ impl Parser<'_> {
             if locks & locked & 4 != 0 {
                 let cm = uint_field(d, c, &mut fields, "color_lock_mask", 4)?;
                 let cv = uint_field(d, c, &mut fields, "color_lock_value", 4)?;
-                // 19.10 and 20.90 files also set selector bits 25/26. The fixed
-                // SDK reader consumes no extra channel operands for them; retain
-                // them raw.
-                let known = if matches!(version, (19, 10) | (20, 90)) {
+                // 18.00, 19.10 and 20.90 files also set selector bits 25/26. The
+                // fixed SDK reader consumes no extra channel operands for them;
+                // retain them raw.
+                let known = if matches!(version, (18, 0) | (19, 10) | (20, 90)) {
                     0x077f7f7f
                 } else {
                     0x017f7f7f
@@ -381,6 +385,12 @@ impl Parser<'_> {
         }
         if high_active & 0x100 != 0 {
             self.simple_shadow(d, c, &mut fields)?;
+        }
+        // The SDK reader takes the shadow map (unsupported above) between the
+        // simple shadow and the simple reflection, and geometry options
+        // (unsupported) after it, before the image tint.
+        if high_active & 0x80000 != 0 {
+            self.simple_reflection(d, c, &mut fields)?;
         }
         for (bits, name, encoding, n) in [
             (0x400, "image_tint", "rgb8", 3),
@@ -509,6 +519,45 @@ impl Parser<'_> {
             (64, "shadow_blur", "u8", 1),
             (32, "shadow_resolution", "uint_le", 2),
             (0x200, "shadow_opacity", "f32_le", 4),
+        ] {
+            if flags & bit != 0 {
+                field(d, c, fields, name, encoding, n)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Simple reflection options as the SDK reader takes them: one byte (a second
+    /// when bit 7 is set), then the plane (4 f32) when 0x4, the opacity (f32)
+    /// when 0x8, the blur (i32) when 0x40 and hither and yon (2 f32) when 0x100.
+    /// On/off (1, 2) and fading on/off (0x10, 0x20) carry no operand.
+    fn simple_reflection(
+        &self,
+        d: usize,
+        c: &mut Cursor<'_>,
+        fields: &mut Vec<OperandField>,
+    ) -> Result<(), HsfError> {
+        let at = c.pos;
+        let mut flags = u32::from(c.u8()?);
+        if flags & 0x80 != 0 {
+            flags |= u32::from(c.u8()?) << 8;
+        }
+        if flags & !0x1ff != 0 {
+            return Err(unsupported(
+                "hsf.simple_reflection_mask",
+                "Unknown simple-reflection options",
+            ));
+        }
+        fields.push(OperandField {
+            name: "simple_reflection_options".into(),
+            encoding: "uint_le".into(),
+            source: span(d, at, c.pos - at),
+        });
+        for (bit, name, encoding, n) in [
+            (4, "reflection_plane", "f32_le", 16),
+            (8, "reflection_opacity", "f32_le", 4),
+            (0x40, "reflection_blur", "i32_le", 4),
+            (0x100, "reflection_attenuation", "f32_le", 8),
         ] {
             if flags & bit != 0 {
                 field(d, c, fields, name, encoding, n)?;

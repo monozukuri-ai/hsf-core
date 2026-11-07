@@ -371,14 +371,14 @@ fn render_fixed_fields_and_legacy_cut_edge_have_exact_order() {
             fields
         );
     }
-    // These observed 19.10 and 20.90 selectors have no channel operand in the
-    // SDK grammar.
+    // These selectors, observed at 18.00, 19.10 and 20.90, have no channel
+    // operand in the SDK grammar.
     for selector in [0x2000000u32, 0x4000000] {
         let payload = [4, 4, selector, selector]
             .iter()
             .flat_map(|x| x.to_le_bytes())
             .collect::<Vec<_>>();
-        for version in ["19.10", "20.90"] {
+        for version in ["18.00", "19.10", "20.90"] {
             let p = parse_body(
                 &[render(0x100000, 0, 0x100000, 0, &payload), vec![0]].concat(),
                 version,

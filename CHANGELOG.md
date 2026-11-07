@@ -1,6 +1,39 @@
 # Changelog
 
-## Unreleased (0.1.0-alpha.4, contract 36)
+## Unreleased (0.1.0-alpha.5, contract 37)
+
+Nine of 43 uploaded eDrawings files still stopped with alpha.4. Six now parse
+to the end: four SOLIDWORKS files at 19.10 that use two records alpha.4 did not
+frame, and one file each from SOLIDWORKS 2011 and 2012 (HSF 17.85 and 18.00).
+The Creo 11 publisher's file (21.15) now reads up to its connectivity-compressed
+Shells, which remain unsupported.
+
+- `17.85`, `18.00` and `21.15` join the syntax profiles (`SYNTAX_VERSIONS`). The
+  existing version-gated rules apply to them; 21.15 is framed as 20.90,
+  including the precision byte and the reference layout.
+- TKE_Selectability (`!`) is framed as `selectability`: a geometry mask (a second
+  byte when bit 7 is set), then the down, up, move-down, move-up and invisible
+  masks, one byte each, or two when extended. It governs picking only, so the
+  scene ignores it.
+- Rendering Options accept simple reflection (second-word bit 0x80000, 15.50+),
+  read after the simple shadow as in the SDK reader: an options byte (a second
+  when bit 7 is set), then the plane, opacity, blur and attenuation its flags
+  select. Unknown option bits stop with `hsf.simple_reflection_mask`. SOLIDWORKS
+  writes it switched off, without further operands.
+- Shells with quantized points (flag 1) are read when the scheme is 1 (trivial):
+  the count, the box the codes span, 2–31 bits per coordinate, then the codes,
+  packed as quantized parameters are. `ShellLayout.point_quantization`
+  (`PointQuantization`: scheme, bits per sample, source span of the box) marks
+  them, `vertices` then spans the codes, and the scene decodes them to f32
+  vertices. Other schemes stop with `hsf.shell_point_compression`, which
+  replaces `hsf.shell_quantized_points`, and other widths with
+  `hsf.shell_point_bits`. An inverted box, or a code length that disagrees with
+  the count and width, is invalid (`hsf.invalid_shell_point_bounds`,
+  `hsf.invalid_shell_point_length`).
+- The colour-lock selector 25/26 allowance now also covers 18.00, and the
+  Visibility bit 26 allowance 21.15, where each was observed.
+
+## 0.1.0-alpha.4 (contract 36)
 
 SOLIDWORKS 2025 and 2026 write eDrawings as HSF 20.90, which alpha.3 refused at
 the header. Ten uploaded 20.90 files showed the differences below from 19.10;

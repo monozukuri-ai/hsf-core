@@ -135,7 +135,7 @@ size, line/edge weights, patterns, marker symbols, text alignment and texture
 matrices. Color/visibility arrays have 32 slots; extension flags are not geometry
 attributes. Sizes retain their magnitude and relative/object/screen/window/
 points/pixels units without conversion. Missing attributes remain absent.
-HSF 19.10 and 20.90 Visibility bit 26 is framed but its meaning remains unsupported.
+HSF 19.10, 20.90 and 21.15 Visibility bit 26 is framed but its meaning remains unsupported.
 
 Numeric line/edge patterns 0–9, caps/joins 0–2 and marker symbols 0–48 are decoded.
 A composite pattern replaces pattern/cap/join together. Unknown assignments
