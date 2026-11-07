@@ -13,7 +13,7 @@ pub struct LineStyleDefinition {
     pub program: Option<LineStyleProgram>,
     pub reason: Option<String>,
     pub id: String,
-    pub source_record_id: String,
+    pub source_record_id: Arc<str>,
     pub source: SourceSpan,
     pub context_node_id: String,
     pub name: TextValue,
@@ -25,7 +25,7 @@ pub struct LineStyleDefinition {
 #[derive(Clone, Debug, Serialize)]
 pub struct FontDefinition {
     pub id: String,
-    pub source_record_id: String,
+    pub source_record_id: Arc<str>,
     pub source: SourceSpan,
     pub context_node_id: String,
     pub format: u8,
@@ -44,7 +44,7 @@ impl Builder<'_> {
             "hsf.limit_definitions",
         )?;
         self.budget.charge_output(2048)?;
-        if let Some(l) = &r.line_style {
+        if let Some(l) = &r.line_style() {
             let name = primitive::text(self.doc, &l.name, None, self.budget)?;
             let definition = primitive::text(self.doc, &l.definition, None, self.budget)?;
             let program = line_style::decode_program(self.doc, &l.definition, self.budget)?;
@@ -77,7 +77,7 @@ impl Builder<'_> {
                 },
             });
         } else {
-            let l = r.font.as_ref().expect("framed font");
+            let l = r.font().expect("framed font");
             let name = primitive::text(self.doc, &l.name, None, self.budget)?;
             let lookup = primitive::text(self.doc, &l.lookup, None, self.budget)?;
             self.issue(
@@ -114,7 +114,7 @@ pub struct NullShell {
     pub instance_transform: Option<Matrix>,
     pub id: String,
     pub node_id: String,
-    pub source_record_id: String,
+    pub source_record_id: Arc<str>,
     pub source: SourceSpan,
     pub lod: u8,
 }
@@ -126,9 +126,9 @@ pub struct RenderingOptions {
     pub settings: Option<RenderingSettings>,
     pub line_style_binding: Option<LineStyleBinding>,
     pub node_id: String,
-    pub source_record_id: String,
+    pub source_record_id: Arc<str>,
     pub source: SourceSpan,
-    pub kind: String,
+    pub kind: Cow<'static, str>,
     pub interpretation_status: Status,
 }
 
@@ -136,7 +136,7 @@ pub struct RenderingOptions {
 #[derive(Clone, Debug, Serialize)]
 pub struct UserIndices {
     pub node_id: String,
-    pub source_record_id: String,
+    pub source_record_id: Arc<str>,
     pub source: SourceSpan,
     pub layout: UserIndexLayout,
     pub interpretation_status: Status,
@@ -147,7 +147,7 @@ pub struct UserIndices {
 #[derive(Clone, Debug, Serialize)]
 pub struct UserIndexData {
     pub node_id: String,
-    pub source_record_id: String,
+    pub source_record_id: Arc<str>,
     pub source: SourceSpan,
     pub layout: UserIndexDataLayout,
     pub interpretation_status: Status,
@@ -158,7 +158,7 @@ pub struct UserIndexData {
 pub struct TextureDefinition {
     pub options: TextureOptions,
     pub id: String,
-    pub source_record_id: String,
+    pub source_record_id: Arc<str>,
     pub source: SourceSpan,
     pub context_node_id: String,
     pub name: TextValue,

@@ -34,14 +34,8 @@ fn overlaps(a: &DisplayAttributes, b: &DisplayAttributes) -> bool {
         || (a.line_pattern.is_some() && b.line_pattern.is_some())
         || (a.edge_pattern.is_some() && b.edge_pattern.is_some())
         || (a.marker_symbol.is_some() && b.marker_symbol.is_some())
-        || a.colors
-            .iter()
-            .zip(&b.colors)
-            .any(|(a, b)| a.is_some() && b.is_some())
-        || a.visibility
-            .iter()
-            .zip(&b.visibility)
-            .any(|(a, b)| a.is_some() && b.is_some())
+        || a.colors.mask() & b.colors.mask() != 0
+        || a.visibility.mask() & b.visibility.mask() != 0
         || (a.marker_size.is_some() && b.marker_size.is_some())
         || (a.line_weight.is_some() && b.line_weight.is_some())
         || (a.edge_weight.is_some() && b.edge_weight.is_some())

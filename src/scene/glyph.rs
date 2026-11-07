@@ -3,7 +3,7 @@ use super::*;
 #[derive(Clone, Debug, Serialize)]
 pub struct GlyphDefinition {
     pub id: String,
-    pub source_record_id: String,
+    pub source_record_id: Arc<str>,
     pub context_node_id: String,
     pub source: SourceSpan,
     pub name: TextValue,
@@ -23,7 +23,7 @@ pub struct GlyphProgram {
 #[derive(Clone, Debug, Serialize)]
 pub struct GlyphCommand {
     pub code: i16,
-    pub kind: String,
+    pub kind: Cow<'static, str>,
     pub points: Vec<[i16; 2]>,
     pub color: Vec<u8>,
     pub source: SourceSpan,
@@ -56,7 +56,7 @@ impl Builder<'_> {
             "hsf.limit_definitions",
         )?;
         self.budget.charge_output(4096)?;
-        let l = r.glyph.as_ref().expect("glyph");
+        let l = r.glyph().expect("glyph");
         let name = primitive::text(self.doc, &l.name, None, self.budget)?;
         let (program, program_reason) = decode(self.doc, &l.definition, self.budget)?;
         let reason = if !name_allowed(self.doc.source_bytes(&l.name).expect("name")) {
@@ -157,6 +157,7 @@ impl Builder<'_> {
                     .as_mut()
                     .filter(|a| a.source == event_source)
             {
+                let a = Arc::make_mut(a);
                 a.value.interpretation_status = binding.status.clone();
                 a.value.symbol = reason.is_none().then(|| "custom".into());
                 a.value.binding = Some(binding);

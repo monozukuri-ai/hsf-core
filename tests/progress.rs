@@ -111,7 +111,7 @@ fn markers_and_batches_preserve_zero_axes_lengths_and_reference_identity() {
 fn shell_refinements_keep_metadata_and_never_become_new_meshes() {
     let b = [shell(true), vec![0]].concat();
     let p = parsed(&b, "19.10", ParseMode::Strict).unwrap();
-    let l = p.data.records[0].shell.as_ref().unwrap();
+    let l = p.data.records[0].shell().unwrap();
     assert_eq!(l.refinement_index, Some(123));
     assert_eq!(l.attributes.len(), 3);
     assert!(l.normals.is_none());
@@ -155,9 +155,9 @@ fn render_nested_fields_and_texture_matrix_are_retained_without_effects() {
     .concat();
     let b = [rendering(), matrix, vec![0]].concat();
     let p = parsed(&b, "14.50", ParseMode::Strict).unwrap();
-    let f = &p.data.records[0].rendering.as_ref().unwrap().fields;
+    let f = &p.data.records[0].rendering().unwrap().fields;
     assert_eq!(
-        f.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(),
+        f.iter().map(|f| &*f.name).collect::<Vec<_>>(),
         [
             "hidden_line_options",
             "hidden_line_hsr",
@@ -174,10 +174,7 @@ fn render_nested_fields_and_texture_matrix_are_retained_without_effects() {
 fn extended_color_selectors_are_opaque_and_version_bounded() {
     let b = b"\"\x80\x81\x80\x02\x01\x05white\0";
     let p = parsed(b, "19.10", ParseMode::Strict).unwrap();
-    assert_eq!(
-        p.data.records[0].rendering.as_ref().unwrap().mask,
-        0x02808180
-    );
+    assert_eq!(p.data.records[0].rendering().unwrap().mask, 0x02808180);
     assert_eq!(
         scene_of(b, ParseMode::Strict).unwrap_err().diagnostic.code,
         "hsf.rendering_semantics"

@@ -93,7 +93,7 @@ impl Builder<'_> {
         // wire length; their decoding is separately charged by primitive::text.
         // Cloned display values remain within the existing 8192-byte allowance.
         self.budget.charge_output(4096)?;
-        let layout = r.named_style.as_ref().expect("framed pattern");
+        let layout = r.named_style().expect("framed pattern");
         let name = layout
             .name
             .as_ref()
@@ -110,7 +110,7 @@ impl Builder<'_> {
             } else {
                 Status::Unsupported
             };
-            self.display_mut(n)?.marker_symbol = Some(Attribute {
+            self.display_mut(n)?.marker_symbol = Some(Arc::new(Attribute {
                 source: r.source.clone(),
                 value: MarkerSymbol {
                     binding: None,
@@ -119,7 +119,7 @@ impl Builder<'_> {
                     symbol,
                     interpretation_status: status.clone(),
                 },
-            });
+            }));
         } else {
             let pattern = layout
                 .index
@@ -154,9 +154,9 @@ impl Builder<'_> {
             // Even an unknown value replaces old local state, preventing stale
             // known values from masquerading as the current assignment.
             if r.opcode == b'-' {
-                self.display_mut(n)?.line_pattern = attribute;
+                self.display_mut(n)?.line_pattern = attribute.map(Arc::new);
             } else {
-                self.display_mut(n)?.edge_pattern = attribute;
+                self.display_mut(n)?.edge_pattern = attribute.map(Arc::new);
             }
         }
         let pending = layout.name.is_some();

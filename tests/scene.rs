@@ -76,8 +76,8 @@ fn widths_normals_quad_and_triangle_provenance() {
             assert_eq!(m.bounds, Some([[0., 0., 0.], [2., 3., 0.]]));
             assert_eq!(result.data.instances.len(), 1);
             assert_eq!(result.data.instances[0].world_transform, IDENTITY);
-            assert!(result.data.instances[0].face_color.is_none());
-            assert!(result.data.instances[0].face_visible.is_none());
+            assert!(result.data.instances[0].face_color().is_none());
+            assert!(result.data.instances[0].face_visible().is_none());
         }
     }
 }
@@ -143,10 +143,10 @@ fn references_keep_definitions_and_compose_row_vector_matrices() {
         ],
         [10., 20.]
     );
-    assert_eq!(i.face_color.as_ref().unwrap().value, [0, 0, 255]);
-    assert!(!i.face_visible.as_ref().unwrap().value);
+    assert_eq!(i.face_color().as_ref().unwrap().value, [0, 0, 255]);
+    assert!(!i.face_visible().as_ref().unwrap().value);
     assert_eq!(
-        p.data.instances[0].face_color.as_ref().unwrap().value,
+        p.data.instances[0].face_color().as_ref().unwrap().value,
         [255, 0, 0]
     );
     // Reopening applies final attributes even to earlier geometry; include uses
@@ -155,11 +155,11 @@ fn references_keep_definitions_and_compose_row_vector_matrices() {
     let p = read(&body, ParseMode::Strict).unwrap();
     assert_eq!(p.data.instances.len(), 3);
     assert_eq!(
-        p.data.instances[0].face_color.as_ref().unwrap().value,
+        p.data.instances[0].face_color().as_ref().unwrap().value,
         [0, 255, 0]
     );
     assert_eq!(
-        p.data.instances[2].face_color.as_ref().unwrap().value,
+        p.data.instances[2].face_color().as_ref().unwrap().value,
         [0, 255, 0]
     );
 }
@@ -230,7 +230,7 @@ fn every_cut_invalid_and_geometry_validation_never_partial_success() {
 #[test]
 fn unsupported_shell_profiles_stop_at_the_shell_without_scanning() {
     for (prefix, code) in [
-        (vec![b'S', 0x50], "hsf.shell_connectivity_compression"),
+        (vec![b'S', 0x51, 0, 4], "hsf.shell_connectivity_scheme"),
         (vec![b'S', 0x11, 0, 2], "hsf.shell_point_compression"),
         (vec![b'S', 0x90, 1, 0], "hsf.shell_flags"),
         (vec![b'~', 0x80, 0x80, 0x80, 0x80], "hsf.color_mask"),
@@ -563,7 +563,8 @@ fn best_effort_placement_is_an_explicit_partial_estimate() {
     assert!(
         estimated.data.instances[0]
             .path
-            .contains(&"reference:0".to_string())
+            .iter()
+            .any(|p| &**p == "reference:0")
     );
     let d = estimated
         .diagnostics
@@ -641,7 +642,12 @@ fn traversal_subtree_places_one_branch_and_skip_places_nothing() {
         .find(|n| n.name.as_deref() == Some("a"))
         .unwrap();
     assert_eq!(a.data.instances.len(), 2);
-    assert!(a.data.instances.iter().all(|i| i.path.contains(&node_a.id)));
+    assert!(
+        a.data
+            .instances
+            .iter()
+            .all(|i| i.path.iter().any(|p| **p == *node_a.id))
+    );
     assert_eq!(a.status, Status::Partial);
     assert_eq!(a.data.placement_status, Status::Partial);
     assert_eq!(a.diagnostics.len(), 1);
@@ -658,10 +664,10 @@ fn traversal_subtree_places_one_branch_and_skip_places_nothing() {
         .find(|n| n.name.as_deref() == Some("x"))
         .unwrap();
     assert_eq!(
-        x.data.instances[0].path.last(),
-        Some(&x.data.meshes[0].owner_node_id)
+        x.data.instances[0].path.last().map(|p| &**p),
+        Some(x.data.meshes[0].owner_node_id.as_str())
     );
-    assert!(x.data.instances[0].path.contains(&node_x.id));
+    assert!(x.data.instances[0].path.iter().any(|p| **p == *node_x.id));
     // The definition itself is a root child: selecting it places it once.
     let def = read_with(&body, options(Traversal::Subtree("/def".into()))).unwrap();
     assert_eq!(def.data.instances.len(), 1);

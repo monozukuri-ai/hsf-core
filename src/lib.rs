@@ -4,11 +4,12 @@ mod syntax;
 pub use scene::*;
 use serde::{Deserialize, Serialize};
 use std::fmt;
+use std::sync::Arc;
 pub use syntax::*;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const SOURCE_SHA256: &str = env!("HSF_SOURCE_SHA256");
-pub const CONTRACT_VERSION: u32 = 37;
+pub const CONTRACT_VERSION: u32 = 38;
 pub const MAX_HEADER_BYTES: usize = 64;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -39,7 +40,8 @@ pub enum Status {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SourceSpan {
-    pub domain_id: String,
+    /// Shared by every span of a domain, so cloning a span does not allocate.
+    pub domain_id: Arc<str>,
     pub offset: u64,
     pub length: u64,
 }

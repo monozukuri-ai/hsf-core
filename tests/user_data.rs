@@ -252,8 +252,8 @@ fn terminal_inventory_needs_both_authorizations_and_exact_final_record() {
         .data
         .records
         .iter()
-        .filter(|r| r.user_data.is_some())
-        .map(|r| r.id.clone())
+        .filter(|r| r.user_data().is_some())
+        .map(|r| r.id.to_string())
         .collect();
     for terminal in [None, Some(ids[0].clone()), Some(ids[1].clone())] {
         let accepted = terminal.as_ref() == Some(&ids[1]);
@@ -295,8 +295,8 @@ fn terminal_authorization_cannot_hide_following_opcodes_or_open_scopes() {
             .data
             .records
             .iter()
-            .filter(|r| r.user_data.is_some())
-            .map(|r| r.id.clone())
+            .filter(|r| r.user_data().is_some())
+            .map(|r| r.id.to_string())
             .collect();
         let s = scene(
             &p,

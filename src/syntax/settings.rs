@@ -1,6 +1,7 @@
 //! Bounded attribute framing. Names, clipping and renderer effects stay opaque.
 use super::rendering::field;
 use super::*;
+use std::borrow::Cow;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NamedStyleLayout {
@@ -60,7 +61,7 @@ fn uint_field(
     d: usize,
     c: &mut Cursor<'_>,
     out: &mut Vec<OperandField>,
-    name: &str,
+    name: impl Into<Cow<'static, str>>,
     width: usize,
 ) -> Result<u32, HsfError> {
     let at = c.pos;
@@ -297,9 +298,8 @@ impl Parser<'_> {
             if locks & locked & 4 != 0 {
                 let cm = uint_field(d, c, &mut fields, "color_lock_mask", 4)?;
                 let cv = uint_field(d, c, &mut fields, "color_lock_value", 4)?;
-                // 18.00, 19.10 and 20.90 files also set selector bits 25/26. The
-                // fixed SDK reader consumes no extra channel operands for them;
-                // retain them raw.
+                // 18.00, 19.10 and 20.90 files also set selector bits 25/26.
+                // They carry no extra channel operands; retain them raw.
                 let known = if matches!(version, (18, 0) | (19, 10) | (20, 90)) {
                     0x077f7f7f
                 } else {
@@ -335,8 +335,8 @@ impl Parser<'_> {
                     ] {
                         // Channel fields depend on color VALUE, not mask & value.
                         if cv & bits != 0 && version >= minimum {
-                            uint_field(d, c, &mut fields, &format!("{name}_lock_mask"), 2)?;
-                            uint_field(d, c, &mut fields, &format!("{name}_lock_value"), 2)?;
+                            uint_field(d, c, &mut fields, format!("{name}_lock_mask"), 2)?;
+                            uint_field(d, c, &mut fields, format!("{name}_lock_value"), 2)?;
                         }
                     }
                 }
@@ -386,9 +386,9 @@ impl Parser<'_> {
         if high_active & 0x100 != 0 {
             self.simple_shadow(d, c, &mut fields)?;
         }
-        // The SDK reader takes the shadow map (unsupported above) between the
-        // simple shadow and the simple reflection, and geometry options
-        // (unsupported) after it, before the image tint.
+        // The shadow map (unsupported above) comes between the simple shadow
+        // and the simple reflection, and geometry options (unsupported) after
+        // it, before the image tint.
         if high_active & 0x80000 != 0 {
             self.simple_reflection(d, c, &mut fields)?;
         }
@@ -527,8 +527,7 @@ impl Parser<'_> {
         Ok(())
     }
 
-    /// Simple reflection options as the SDK reader takes them: one byte (a second
-    /// when bit 7 is set), then the plane (4 f32) when 0x4, the opacity (f32)
+    /// Simple reflection options: one byte (a second when bit 7 is set), then the plane (4 f32) when 0x4, the opacity (f32)
     /// when 0x8, the blur (i32) when 0x40 and hither and yon (2 f32) when 0x100.
     /// On/off (1, 2) and fading on/off (0x10, 0x20) carry no operand.
     fn simple_reflection(

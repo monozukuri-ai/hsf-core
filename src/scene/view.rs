@@ -27,7 +27,7 @@ pub struct Camera {
 #[derive(Clone, Debug, Serialize)]
 pub struct NamedView {
     pub id: String,
-    pub source_record_id: String,
+    pub source_record_id: Arc<str>,
     pub source: SourceSpan,
     /// Lexical context, not the segment to which this camera is applied.
     pub context_node_id: String,
@@ -39,10 +39,10 @@ pub struct NamedView {
 }
 
 pub(super) fn decode(doc: &HsfDocument, r: &Record) -> Result<(Camera, bool), HsfError> {
-    let (p, source) = if let Some(l) = &r.camera {
+    let (p, source) = if let Some(l) = &r.camera() {
         (l.projection, &l.settings)
     } else {
-        let l = r.view.as_ref().expect("framed view");
+        let l = r.view().expect("framed view");
         (l.projection, &l.camera)
     };
     let bytes = doc.source_bytes(source).expect("framed camera");
@@ -64,7 +64,7 @@ pub(super) fn decode(doc: &HsfDocument, r: &Record) -> Result<(Camera, bool), Hs
     {
         return Err(fail(
             r,
-            if r.camera.is_some() {
+            if r.camera().is_some() {
                 "hsf.nonfinite_camera"
             } else {
                 "hsf.nonfinite_view"
@@ -76,7 +76,7 @@ pub(super) fn decode(doc: &HsfDocument, r: &Record) -> Result<(Camera, bool), Hs
     if field_width <= 0. || field_height <= 0. {
         return Err(fail(
             r,
-            if r.camera.is_some() {
+            if r.camera().is_some() {
                 "hsf.invalid_camera_field"
             } else {
                 "hsf.invalid_view_field"
@@ -121,7 +121,7 @@ pub(super) fn decode(doc: &HsfDocument, r: &Record) -> Result<(Camera, bool), Hs
 #[derive(Clone, Debug, Serialize)]
 pub struct SegmentCamera {
     pub node_id: String,
-    pub source_record_id: String,
+    pub source_record_id: Arc<str>,
     pub source: SourceSpan,
     pub camera_source: SourceSpan,
     pub camera: Camera,

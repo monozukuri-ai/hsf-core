@@ -61,7 +61,7 @@ fn body() -> Vec<u8> {
 #[test]
 fn precision_bytes_and_unconditional_references_frame_every_record() {
     let p = parsed(&body(), "20.90", ParseMode::Strict).unwrap();
-    let kinds: Vec<_> = p.data.records.iter().map(|r| r.kind.as_str()).collect();
+    let kinds: Vec<_> = p.data.records.iter().map(|r| &*r.kind).collect();
     assert_eq!(
         kinds,
         [
@@ -86,7 +86,7 @@ fn precision_bytes_and_unconditional_references_frame_every_record() {
         floats(&[0., 0., 0., 1., 2., 3.])
     );
     assert_eq!(bytes(&p.data.records[1].payload), floats(&MATRIX));
-    let view = p.data.records[2].view.as_ref().unwrap();
+    let view = p.data.records[2].view().unwrap();
     assert_eq!(view.projection, 0);
     assert_eq!(p.data.source_bytes(&view.camera).unwrap(), floats(&CAMERA));
     assert_eq!(
@@ -95,7 +95,7 @@ fn precision_bytes_and_unconditional_references_frame_every_record() {
     );
     assert!(p.data.records[5].condition.is_none());
     assert_eq!(bytes(&p.data.records[6].payload), b"/style");
-    let shell = p.data.records[9].shell.as_ref().unwrap();
+    let shell = p.data.records[9].shell().unwrap();
     assert_eq!(shell.vertex_count, 3);
     assert_eq!(shell.attributes.len(), 1);
     assert_eq!(shell.attributes[0].opcode, 28);
@@ -179,7 +179,7 @@ fn shell_attribute_28_is_its_own_family() {
     both.extend(floats(&PARAMETERS));
     both.push(0);
     let p = parsed(&[both, vec![0]].concat(), "20.90", ParseMode::Strict).unwrap();
-    let shell = p.data.records[0].shell.as_ref().unwrap();
+    let shell = p.data.records[0].shell().unwrap();
     assert_eq!(
         shell
             .attributes

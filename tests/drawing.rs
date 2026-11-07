@@ -235,15 +235,15 @@ fn references_repeats_and_per_mask_attributes_apply_to_primitives() {
     let instances = &result.data.primitive_instances;
     assert_eq!(instances.len(), 3);
     for i in &instances[..2] {
-        assert_eq!(i.display.colors[2].as_ref().unwrap().value, [9, 8, 7]);
-        assert_eq!(i.display.colors[4].as_ref().unwrap().value, [1, 2, 3]);
-        assert!(i.display.visibility[2].as_ref().unwrap().value);
-        assert!(!i.display.visibility[4].as_ref().unwrap().value);
-        assert!(i.display.colors[0].is_none());
+        assert_eq!(i.display.colors.get(2).as_ref().unwrap().value, [9, 8, 7]);
+        assert_eq!(i.display.colors.get(4).as_ref().unwrap().value, [1, 2, 3]);
+        assert!(i.display.visibility.get(2).as_ref().unwrap().value);
+        assert!(!i.display.visibility.get(4).as_ref().unwrap().value);
+        assert!(i.display.colors.get(0).is_none());
     }
     assert_eq!(&instances[1].world_transform[12..15], &[10., 20., 30.]);
     assert_eq!(&instances[2].world_transform[12..15], &[12., 20., 30.]);
-    assert!(instances[2].display.colors.iter().all(Option::is_none));
+    assert!(instances[2].display.colors.is_empty());
 }
 
 #[test]

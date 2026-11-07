@@ -17,9 +17,9 @@ pub struct Primitive {
     pub owner_node_id: String,
     /// `polygon` has an implicit final-to-first edge. Stored vertices are not
     /// duplicated, fitted to a plane or triangulated.
-    pub kind: String,
+    pub kind: Cow<'static, str>,
     pub source: SourceSpan,
-    pub source_record_id: String,
+    pub source_record_id: Arc<str>,
     pub points_source: SourceSpan,
     pub point_count: u32,
     /// Empty for ordinary primitives; ordered component lengths for a batch.
@@ -33,69 +33,138 @@ pub struct Primitive {
 
 /// Colors and visibility use mask bits 0..31. Extension flags
 /// (color: 7, 15, 23; visibility: 7, 23) never become geometry attributes.
+///
+/// A large assembly copies these per segment (copy-on-write) and per visited
+/// segment (inheritance), hundreds of thousands of times: values are shared and
+/// slots are stored sparsely, so a copy is a few pointers.
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct DisplayAttributes {
-    pub text_anchor: Option<Attribute<EnumeratedValue>>,
-    pub text_justification: Option<Attribute<EnumeratedValue>>,
-    pub line_pattern: Option<Attribute<LinePattern>>,
-    pub edge_pattern: Option<Attribute<LinePattern>>,
-    pub marker_symbol: Option<Attribute<MarkerSymbol>>,
+    pub text_anchor: Option<Arc<Attribute<EnumeratedValue>>>,
+    pub text_justification: Option<Arc<Attribute<EnumeratedValue>>>,
+    pub line_pattern: Option<Arc<Attribute<LinePattern>>>,
+    pub edge_pattern: Option<Arc<Attribute<LinePattern>>>,
+    pub marker_symbol: Option<Arc<Attribute<MarkerSymbol>>>,
     /// Texture transforms override inherited transforms; they never concatenate.
-    pub texture_matrix: Option<Attribute<Matrix>>,
-    pub colors: [Option<Attribute<[u8; 3]>>; 32],
-    pub visibility: [Option<Attribute<bool>>; 32],
-    pub marker_size: Option<Attribute<MarkerSize>>,
-    pub line_weight: Option<Attribute<MarkerSize>>,
-    pub edge_weight: Option<Attribute<MarkerSize>>,
+    pub texture_matrix: Option<Arc<Attribute<Matrix>>>,
+    pub colors: Slots<[u8; 3]>,
+    pub visibility: Slots<bool>,
+    pub marker_size: Option<Arc<Attribute<MarkerSize>>>,
+    pub line_weight: Option<Arc<Attribute<MarkerSize>>>,
+    pub edge_weight: Option<Arc<Attribute<MarkerSize>>>,
 }
 impl DisplayAttributes {
     pub(super) fn inherit(&self, parent: &Self) -> Self {
-        Self {
-            text_anchor: self
-                .text_anchor
-                .clone()
-                .or_else(|| parent.text_anchor.clone()),
-            text_justification: self
-                .text_justification
-                .clone()
-                .or_else(|| parent.text_justification.clone()),
-            line_pattern: self
-                .line_pattern
-                .clone()
-                .or_else(|| parent.line_pattern.clone()),
-            edge_pattern: self
-                .edge_pattern
-                .clone()
-                .or_else(|| parent.edge_pattern.clone()),
-            marker_symbol: self
-                .marker_symbol
-                .clone()
-                .or_else(|| parent.marker_symbol.clone()),
-            texture_matrix: self
-                .texture_matrix
-                .clone()
-                .or_else(|| parent.texture_matrix.clone()),
-            edge_weight: self
-                .edge_weight
-                .clone()
-                .or_else(|| parent.edge_weight.clone()),
-            line_weight: self
-                .line_weight
-                .clone()
-                .or_else(|| parent.line_weight.clone()),
-            marker_size: self
-                .marker_size
-                .clone()
-                .or_else(|| parent.marker_size.clone()),
-            colors: std::array::from_fn(|i| {
-                self.colors[i].clone().or_else(|| parent.colors[i].clone())
-            }),
-            visibility: std::array::from_fn(|i| {
-                self.visibility[i]
-                    .clone()
-                    .or_else(|| parent.visibility[i].clone())
-            }),
+        fn pick<T>(own: &Option<Arc<T>>, parent: &Option<Arc<T>>) -> Option<Arc<T>> {
+            own.as_ref().or(parent.as_ref()).cloned()
         }
+        Self {
+            text_anchor: pick(&self.text_anchor, &parent.text_anchor),
+            text_justification: pick(&self.text_justification, &parent.text_justification),
+            line_pattern: pick(&self.line_pattern, &parent.line_pattern),
+            edge_pattern: pick(&self.edge_pattern, &parent.edge_pattern),
+            marker_symbol: pick(&self.marker_symbol, &parent.marker_symbol),
+            texture_matrix: pick(&self.texture_matrix, &parent.texture_matrix),
+            edge_weight: pick(&self.edge_weight, &parent.edge_weight),
+            line_weight: pick(&self.line_weight, &parent.line_weight),
+            marker_size: pick(&self.marker_size, &parent.marker_size),
+            colors: self.colors.inherit(&parent.colors),
+            visibility: self.visibility.inherit(&parent.visibility),
+        }
+    }
+}
+
+/// The 32 color or visibility slots (mask bits 0..31). Records assign one value
+/// to many slots at once (a color to every geometry bit of its mask), so the set
+/// slots are stored as a few (slots, value) runs, shared between clones.
+/// Serialized as 32 entries, `null` for an unset slot.
+#[derive(Clone, Debug)]
+pub struct Slots<T> {
+    set: u32,
+    runs: Option<Runs<T>>,
+}
+/// (slots, value) pairs with disjoint slot masks.
+type Runs<T> = Arc<[(u32, Attribute<T>)]>;
+impl<T> Default for Slots<T> {
+    fn default() -> Self {
+        Self { set: 0, runs: None }
+    }
+}
+impl<T: Clone> Slots<T> {
+    pub fn get(&self, slot: usize) -> Option<&Attribute<T>> {
+        let bit = 1u32.checked_shl(slot as u32)?;
+        if self.set & bit == 0 {
+            return None;
+        }
+        let runs = self.runs.as_deref()?;
+        runs.iter()
+            .find(|(mask, _)| mask & bit != 0)
+            .map(|(_, value)| value)
+    }
+    /// Set bits: slot `i` is set when bit `i` is.
+    pub fn mask(&self) -> u32 {
+        self.set
+    }
+    pub fn is_empty(&self) -> bool {
+        self.set == 0
+    }
+    /// All 32 slots in order.
+    pub fn iter(&self) -> impl Iterator<Item = Option<&Attribute<T>>> {
+        (0..32).map(|slot| self.get(slot))
+    }
+    pub fn to_array(&self) -> [Option<Attribute<T>>; 32] {
+        std::array::from_fn(|slot| self.get(slot).cloned())
+    }
+    pub fn set(&mut self, slot: usize, value: Option<Attribute<T>>) {
+        assert!(slot < 32, "attribute slot out of range");
+        self.assign(1 << slot, value);
+    }
+    /// Give every slot in `mask` the same value, or clear them.
+    pub fn assign(&mut self, mask: u32, value: Option<Attribute<T>>) {
+        if mask == 0 {
+            return;
+        }
+        let mut runs: Vec<(u32, Attribute<T>)> = self
+            .runs
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .filter(|(m, _)| m & !mask != 0)
+            .map(|(m, v)| (m & !mask, v.clone()))
+            .collect();
+        if let Some(value) = value {
+            runs.push((mask, value));
+        }
+        self.set = runs.iter().fold(0, |set, (m, _)| set | m);
+        self.runs = (!runs.is_empty()).then(|| Arc::from(runs));
+    }
+    /// Own slots win; the parent fills the rest. Shares either side when the
+    /// other adds nothing.
+    fn inherit(&self, parent: &Self) -> Self {
+        let missing = parent.set & !self.set;
+        if missing == 0 {
+            return self.clone();
+        }
+        if self.set == 0 {
+            return parent.clone();
+        }
+        let own = self.runs.as_deref().unwrap_or_default().iter().cloned();
+        let inherited = parent
+            .runs
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .filter(|(m, _)| m & missing != 0)
+            .map(|(m, v)| (m & missing, v.clone()));
+        let runs: Vec<_> = own.chain(inherited).collect();
+        Self {
+            set: self.set | missing,
+            runs: Some(Arc::from(runs)),
+        }
+    }
+}
+impl<T: Clone + Serialize> Serialize for Slots<T> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_seq(self.iter())
     }
 }
 #[derive(Clone, Debug, Serialize)]
@@ -104,7 +173,8 @@ pub struct PrimitiveInstance {
     pub id: String,
     pub primitive_id: String,
     pub node_id: String,
-    pub path: Vec<String>,
+    /// Node and reference ids from the root, shared like `Instance::path`.
+    pub path: Arc<[Arc<str>]>,
     pub world_transform: Matrix,
     pub determinant: f64,
     pub display: Arc<DisplayAttributes>,
@@ -112,7 +182,7 @@ pub struct PrimitiveInstance {
 #[derive(Clone, Debug, Serialize)]
 pub struct UserOptions {
     pub node_id: String,
-    pub source_record_id: String,
+    pub source_record_id: Arc<str>,
     pub text: TextValue,
 }
 
@@ -209,7 +279,7 @@ pub(super) fn decode(
     r: &Record,
     budget: &mut Budget,
 ) -> Result<Primitive, HsfError> {
-    if let Some(l) = &r.poly_polyline {
+    if let Some(l) = &r.poly_polyline() {
         budget.charge_output(
             2048 + u64::from(l.point_count) * 24 + u64::from(l.primitive_count) * 8,
         )?;
@@ -264,7 +334,7 @@ pub(super) fn decode(
             points,
         });
     }
-    let layout = r.primitive.as_ref().expect("primitive framing");
+    let layout = r.primitive().expect("primitive framing");
     budget.charge_output(512 + u64::from(layout.point_count) * 12)?;
     let points = doc
         .source_bytes(&layout.points)

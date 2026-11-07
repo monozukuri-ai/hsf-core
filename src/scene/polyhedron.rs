@@ -38,13 +38,13 @@ pub(super) fn normals(
     r: &Record,
     budget: &mut Budget,
 ) -> Result<NormalResult, HsfError> {
-    let layout = if let Some(m) = &r.mesh {
+    let layout = if let Some(m) = &r.mesh() {
         m.attributes
             .iter()
             .find(|a| a.opcode == 17)
             .map(|a| (m.vertex_count, &a.source, &a.values, None, None))
     } else {
-        let s = r.shell.as_ref().expect("shell");
+        let s = r.shell().expect("shell");
         s.attributes
             .iter()
             .find(|a| matches!(a.opcode, 1 | 17))
@@ -145,8 +145,7 @@ pub(super) fn metadata(
     budget: &mut Budget,
 ) -> Result<Option<EntityMetadata>, HsfError> {
     let Some(a) = r
-        .shell
-        .as_ref()
+        .shell()
         .and_then(|s| s.attributes.iter().find(|a| a.opcode == 99))
     else {
         return Ok(None);

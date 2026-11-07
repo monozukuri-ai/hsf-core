@@ -269,7 +269,12 @@ fn include_library_targets_render_only_through_includes() {
     assert_eq!(s.status, Status::Complete);
     assert_eq!(s.data.instances.len(), 1);
     assert_eq!(s.data.instances[0].node_id, s.data.nodes[2].id);
-    assert!(s.data.instances[0].path.contains(&s.data.references[0].id));
+    assert!(
+        s.data.instances[0]
+            .path
+            .iter()
+            .any(|p| **p == *s.data.references[0].id)
+    );
     // A library segment that nothing includes is not pruned.
     let body = [
         named(b'(', b"shared"),

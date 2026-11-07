@@ -37,11 +37,7 @@ fn independent_golden_operands_preserve_bytes_and_context() {
     assert_eq!(p.status, Status::Complete);
     assert!(p.unparsed.is_empty());
     assert_eq!(
-        p.data
-            .records
-            .iter()
-            .map(|r| r.kind.as_str())
-            .collect::<Vec<_>>(),
+        p.data.records.iter().map(|r| &*r.kind).collect::<Vec<_>>(),
         [
             "file_info",
             "comment",
@@ -337,7 +333,7 @@ fn rendering_options_third_mask_word_is_framed() {
         .iter()
         .find(|r| r.kind == "rendering_options")
         .unwrap();
-    let layout = record.rendering.as_ref().unwrap();
+    let layout = record.rendering().unwrap();
     assert_eq!(layout.mask, 0x80000000_80010000);
     assert_eq!(layout.value, 0x00000000_00010000);
     assert_eq!(layout.extended2_mask, 2);
@@ -357,8 +353,7 @@ fn rendering_options_third_mask_word_is_framed() {
         .iter()
         .find(|r| r.kind == "rendering_options")
         .unwrap()
-        .rendering
-        .as_ref()
+        .rendering()
         .unwrap();
     assert_eq!((layout.extended2_mask, layout.extended2_value), (0, 0));
     // Third-word options with operands have an unverified position: stop there.
@@ -386,7 +381,7 @@ fn user_index_data_is_framed_per_entry() {
         .find(|r| r.kind == "user_index_data")
         .unwrap();
     assert_eq!(r.opcode, b'm');
-    let layout = r.user_index_data.as_ref().unwrap();
+    let layout = r.user_index_data().unwrap();
     assert_eq!(layout.count, 2);
     assert_eq!(layout.entries.len(), 2);
     assert_eq!(layout.entries[0].index, i32::from_le_bytes(*b"name"));

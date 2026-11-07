@@ -8,8 +8,8 @@ pub struct EnumeratedValue {
 }
 #[derive(Clone, Debug, Serialize)]
 pub struct RenderingOperand {
-    pub name: String,
-    pub encoding: String,
+    pub name: Cow<'static, str>,
+    pub encoding: Cow<'static, str>,
     pub source: SourceSpan,
     pub floats: Vec<f32>,
     pub integers: Vec<i64>,
@@ -68,19 +68,19 @@ impl Builder<'_> {
                 ],
             );
             complete &= e.interpretation_status == Status::Complete;
-            self.display_mut(n)?.text_anchor = Some(Attribute {
+            self.display_mut(n)?.text_anchor = Some(Arc::new(Attribute {
                 value: e,
                 source: r.source.clone(),
-            });
+            }));
         }
         let index = value >> 4;
         if index != 0 {
             let e = enumeration(index, &["no_setting", "left", "center", "right"]);
             complete &= e.interpretation_status == Status::Complete;
-            self.display_mut(n)?.text_justification = Some(Attribute {
+            self.display_mut(n)?.text_justification = Some(Arc::new(Attribute {
                 value: e,
                 source: r.source.clone(),
-            });
+            }));
         }
         if !complete {
             self.issue(
@@ -112,7 +112,7 @@ impl Builder<'_> {
         if !matches!(r.opcode, b'F' | b'H' | b'R') {
             return Ok(None);
         }
-        let l = r.rendering.as_ref().expect("render layout");
+        let l = r.rendering().expect("render layout");
         let bytes: u64 = l.fields.iter().map(|f| f.source.length).sum();
         self.budget
             .charge_output(8192 + l.fields.len() as u64 * 2048 + bytes * 8)?;
@@ -130,7 +130,7 @@ impl Builder<'_> {
                 enumeration: None,
                 decoding_status: Status::Complete,
             };
-            match f.encoding.as_str() {
+            match &*f.encoding {
                 "f32_le" => {
                     v.floats = bytes
                         .chunks_exact(4)
@@ -164,7 +164,7 @@ impl Builder<'_> {
                 _ => v.decoding_status = Status::Unsupported,
             }
             if r.opcode == b'F' && bytes.len() == 1 {
-                let names = match f.name.as_str() {
+                let names = match &*f.name {
                     "tolerance_units" => Some(
                         &[
                             "object",

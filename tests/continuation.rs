@@ -113,7 +113,7 @@ fn rectangular_mesh_has_native_diagonal_and_triangle_face_numbers() {
     );
     assert_eq!(m.bounds, Some([[0., 0., 0.], [1., 2., 0.]]));
     let p = parsed(&[grid(true), vec![0]].concat(), "19.10", ParseMode::Strict).unwrap();
-    let a = &p.data.records[0].mesh.as_ref().unwrap().attributes[0];
+    let a = &p.data.records[0].mesh().unwrap().attributes[0];
     assert_eq!((a.opcode, a.width, a.bits_per_sample), (3, 3, Some(8)));
     assert_eq!(p.data.source_bytes(&a.values).unwrap(), [0; 18]);
     let s = scene_of(&[grid(true), vec![0]].concat(), ParseMode::Partial).unwrap();
@@ -144,7 +144,7 @@ fn normal_and_uncompressed_parameter_attributes_preserve_values() {
     b.extend(floats(&[0., 1.].repeat(6)));
     b.extend([0, 0]);
     let p = parsed(&b, "19.10", ParseMode::Strict).unwrap();
-    let l = p.data.records[0].mesh.as_ref().unwrap();
+    let l = p.data.records[0].mesh().unwrap();
     assert_eq!(l.attributes.len(), 2);
     let s = scene_of(&b, ParseMode::Partial).unwrap();
     assert_eq!(s.data.meshes[0].normals, [[0., 0., 1.]; 6]);
@@ -157,8 +157,7 @@ fn normal_and_uncompressed_parameter_attributes_preserve_values() {
             .unwrap()
             .data
             .records[0]
-            .mesh
-            .as_ref()
+            .mesh()
             .unwrap()
             .attributes[0]
             .width,
@@ -173,21 +172,21 @@ fn texture_options_strings_and_conditions_are_source_backed() {
     ]
     .concat();
     let p = parsed(&b, "19.10", ParseMode::Strict).unwrap();
-    let t = p.data.records[0].texture.as_ref().unwrap();
+    let t = p.data.records[0].texture().unwrap();
     assert_eq!(t.flags, 0x7ffff);
     assert_eq!(p.data.source_bytes(&t.name).unwrap(), b"tex");
     assert_eq!(p.data.source_bytes(&t.image).unwrap(), b"img");
     assert_eq!(t.fields.len(), 14);
     assert_eq!(t.fields[10].source.length, 8);
     assert_eq!(t.fields[11].name, "transform_segment");
-    assert_eq!(p.data.records[3].indexed_color.as_ref().unwrap().index, 513);
+    assert_eq!(p.data.records[3].indexed_color().unwrap().index, 513);
     let s = scene_of(&b, ParseMode::Partial).unwrap();
     assert_eq!(s.data.textures.len(), 1);
     assert_eq!(s.data.rendering_options.len(), 3);
     assert_eq!(s.data.placement_status, Status::Unsupported);
     let b = b"~\x01\x01\x02\x03\x08\x01\x07\0";
     let s = scene_of(b, ParseMode::Partial).unwrap();
-    assert!(s.data.nodes[0].display.colors[0].is_none());
+    assert!(s.data.nodes[0].display.colors.get(0).is_none());
     assert!(s.data.nodes[0].face_color.is_none());
     // Long texture name uses a signed i32 escape, independently of image length.
     let b = [
@@ -199,8 +198,7 @@ fn texture_options_strings_and_conditions_are_source_backed() {
     .concat();
     assert_eq!(
         parsed(&b, "19.10", ParseMode::Strict).unwrap().data.records[0]
-            .texture
-            .as_ref()
+            .texture()
             .unwrap()
             .name
             .length,

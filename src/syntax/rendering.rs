@@ -1,10 +1,13 @@
 //! Source-preserving framing of render settings. No renderer or string evaluator.
 use super::*;
+use std::borrow::Cow;
 
+/// Names and encodings are the reader's own labels: borrowed, so a large file's
+/// millions of fields do not each allocate two strings.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OperandField {
-    pub name: String,
-    pub encoding: String,
+    pub name: Cow<'static, str>,
+    pub encoding: Cow<'static, str>,
     pub source: SourceSpan,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -28,8 +31,8 @@ pub(super) fn field(
     d: usize,
     c: &mut Cursor<'_>,
     out: &mut Vec<OperandField>,
-    name: &str,
-    encoding: &str,
+    name: impl Into<Cow<'static, str>>,
+    encoding: &'static str,
     length: usize,
 ) -> Result<(), HsfError> {
     let start = c.pos;
@@ -86,7 +89,7 @@ impl Parser<'_> {
         d: usize,
         c: &mut Cursor<'_>,
         out: &mut Vec<OperandField>,
-        name: &str,
+        name: &'static str,
         length: u64,
     ) -> Result<(), HsfError> {
         let source = self.payload(d, c, length)?;
@@ -199,7 +202,7 @@ impl Parser<'_> {
                                 d,
                                 c,
                                 &mut fields,
-                                &format!("ordered_weight_{bit}"),
+                                format!("ordered_weight_{bit}"),
                                 "f32_le",
                                 4,
                             )?;
@@ -263,7 +266,7 @@ impl Parser<'_> {
                     if enabled & bit != 0 {
                         field(d, c, &mut fields, name, encoding, length)?;
                         if units {
-                            field(d, c, &mut fields, &format!("{name}_units"), "u8", 1)?;
+                            field(d, c, &mut fields, format!("{name}_units"), "u8", 1)?;
                         }
                     }
                 }
@@ -271,8 +274,8 @@ impl Parser<'_> {
                     if mask & bit != 0 {
                         field(d, c, &mut fields, name, "u8", 1)?;
                         if version >= (13, 25) {
-                            field(d, c, &mut fields, &format!("{name}_cutoff"), "f32_le", 4)?;
-                            field(d, c, &mut fields, &format!("{name}_cutoff_units"), "u8", 1)?;
+                            field(d, c, &mut fields, format!("{name}_cutoff"), "f32_le", 4)?;
+                            field(d, c, &mut fields, format!("{name}_cutoff_units"), "u8", 1)?;
                         }
                     }
                 }

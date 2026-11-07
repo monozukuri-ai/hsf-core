@@ -74,7 +74,7 @@ fn all_projection_masks_and_versions_keep_exact_name_and_float_spans() {
                 continue;
             }
             let p = parse_body(version, &b, ParseMode::Strict).unwrap();
-            let layout = p.data.records[0].view.as_ref().unwrap();
+            let layout = p.data.records[0].view().unwrap();
             assert_eq!(p.data.source_bytes(&layout.name).unwrap(), b"default");
             assert_eq!(
                 layout.camera.length,

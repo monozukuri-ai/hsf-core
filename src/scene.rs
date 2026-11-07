@@ -1,5 +1,6 @@
 //! A deliberately bounded generic scene profile, independent of CAD products.
 use crate::*;
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 mod text_settings;
@@ -8,6 +9,7 @@ mod glyph;
 pub use glyph::*;
 mod context;
 pub use context::*;
+mod edgebreaker;
 mod line_style;
 mod mesh;
 pub use line_style::*;
@@ -143,7 +145,7 @@ pub struct EntityMetadata {
 }
 #[derive(Clone, Debug, Serialize)]
 pub struct EntityMetadataField {
-    pub kind: String,
+    pub kind: Cow<'static, str>,
     pub text: TextValue,
 }
 #[derive(Clone, Debug, Serialize)]
@@ -168,7 +170,7 @@ pub struct ShellParameterSet {
     pub mesh_id: Option<String>,
     pub id: String,
     pub node_id: String,
-    pub source_record_id: String,
+    pub source_record_id: Arc<str>,
     pub source: SourceSpan,
     /// The Shell's stored points: f32 XYZ, or the packed codes when its
     /// `ShellLayout.point_quantization` is set.
@@ -196,7 +198,7 @@ pub struct Mesh {
     pub parameters: Vec<f32>,
     pub id: String,
     pub source: SourceSpan,
-    pub source_record_id: String,
+    pub source_record_id: Arc<str>,
     pub vertex_count: u64,
     pub face_value_count: u64,
     pub triangle_count: u64,
@@ -255,7 +257,7 @@ pub struct Reference {
     pub node_id: String,
     pub target_id: Option<String>,
     pub source: SourceSpan,
-    pub kind: String,
+    pub kind: Cow<'static, str>,
     pub transform: Option<Matrix>,
 }
 #[derive(Clone, Debug, Serialize)]
@@ -267,12 +269,22 @@ pub struct Instance {
     pub id: String,
     pub mesh_id: String,
     pub node_id: String,
-    pub path: Vec<String>,
+    /// Node and reference ids from the root. Shared by the instances placed
+    /// from one segment visit; a reference link adds its id to a new slice.
+    pub path: Arc<[Arc<str>]>,
     /// Row-major, row-vector convention: point * local * parent.
     pub world_transform: Matrix,
     pub determinant: f64,
-    pub face_color: Option<Attribute<[u8; 3]>>,
-    pub face_visible: Option<Attribute<bool>>,
+}
+impl Instance {
+    /// The inherited face color (color slot 0).
+    pub fn face_color(&self) -> Option<&Attribute<[u8; 3]>> {
+        self.display.colors.get(0)
+    }
+    /// The inherited face visibility (visibility slot 0).
+    pub fn face_visible(&self) -> Option<&Attribute<bool>> {
+        self.display.visibility.get(0)
+    }
 }
 #[derive(Clone, Debug, Serialize)]
 pub struct Scene {
@@ -309,7 +321,7 @@ pub struct Scene {
 }
 #[derive(Clone, Debug, Serialize)]
 pub struct OpaqueUserData {
-    pub source_record_id: String,
+    pub source_record_id: Arc<str>,
     pub source: SourceSpan,
     pub profile: String,
 }
@@ -318,8 +330,17 @@ enum Object {
     NullShell(usize),
     Image(usize),
     Node(usize),
-    Mesh(usize, Matrix),
-    Primitive(usize, Matrix),
+    Mesh(usize, Local),
+    Primitive(usize, Local),
+}
+/// A definition's transform within its segment. `None` is the identity, the
+/// common case, so the per-segment links of a large assembly stay small.
+type Local = Option<Arc<Matrix>>;
+fn local_matrix(local: &Local) -> Matrix {
+    local.as_deref().copied().unwrap_or(IDENTITY)
+}
+fn local_of(matrix: Matrix) -> Local {
+    (matrix != IDENTITY).then(|| Arc::new(matrix))
 }
 #[derive(Clone)]
 struct Link {
@@ -485,6 +506,7 @@ pub fn scene(
         styled_displays: vec![],
         visits: 0,
     };
+    b.reserve(&parsed.data.records);
     b.node(None, Some("/".into()), None, None)?;
     b.paths.insert("/".into(), 0);
     b.node_paths[0] = Some("/".into());
@@ -590,7 +612,7 @@ struct Builder<'a> {
     tags: HashMap<u32, Object>,
     // A target remains a stable NullShell object for tags and references.
     // None records a conflicting repeated refinement and never permits rebinding.
-    null_meshes: HashMap<usize, Option<(usize, Matrix)>>,
+    null_meshes: HashMap<usize, Option<(usize, Local)>>,
     mount: Option<Vec<String>>,
     pending_instances: Vec<PendingInstance>,
     include_targets: HashSet<usize>,
@@ -611,6 +633,40 @@ struct Builder<'a> {
     visits: u64,
 }
 impl Builder<'_> {
+    /// Size the per-record collections from the syntax records, within the
+    /// configured limits. A large assembly otherwise doubles them past their final
+    /// length and briefly holds the old and new copies together. Nodes are left
+    /// to grow: reopened segments make the open-segment count overshoot.
+    fn reserve(&mut self, records: &[Record]) {
+        let (mut references, mut meshes, mut null_shells, mut primitives) = (0, 0, 0, 0);
+        for r in records {
+            match r.opcode {
+                b'<' | b'{' | b'&' | b'r' => references += 1,
+                _ => {}
+            }
+            match &r.shell() {
+                Some(s) if s.null => null_shells += 1,
+                Some(_) => meshes += 1,
+                None => {}
+            }
+            meshes += usize::from(r.mesh().is_some());
+            primitives += usize::from(r.primitive().is_some() || r.poly_polyline().is_some());
+        }
+        let cap = |n: usize, max: u64| n.min(usize::try_from(max).unwrap_or(usize::MAX));
+        let meshes = cap(meshes, self.options.max_meshes);
+        let null_shells = cap(null_shells, self.options.max_meshes);
+        let primitives = cap(primitives, self.options.max_primitives);
+        let references = cap(references, self.options.max_nodes);
+        self.data.meshes.reserve_exact(meshes);
+        self.data.null_shells.reserve_exact(null_shells);
+        self.data.primitives.reserve_exact(primitives);
+        self.data.references.reserve_exact(references);
+        // Instances are only known after traversal; each placed definition is a
+        // lower bound, so growth starts there rather than from zero.
+        self.data
+            .instances
+            .reserve(cap(meshes, self.options.max_instances));
+    }
     fn outcome(
         mut self,
         parsed: &ParseOutcome<HsfDocument>,
@@ -748,14 +804,14 @@ impl Builder<'_> {
         Ok(())
     }
     fn terminal_inventory_allowed(&self, r: &Record) -> bool {
-        if self.options.inventory_terminal_user_data_record.as_deref() != Some(r.id.as_str())
-            || r.user_data.is_none()
+        if self.options.inventory_terminal_user_data_record.as_deref() != Some(&*r.id)
+            || r.user_data().is_none()
             || r.scope.is_some()
             || self.stack.len() != 1
             || self.stack[0] != self.import_node
             || self.data.opaque_user_data.len() != 1
             || self.options.inventory_user_data_record.as_deref()
-                != Some(self.data.opaque_user_data[0].source_record_id.as_str())
+                != Some(&*self.data.opaque_user_data[0].source_record_id)
             || self.data.opaque_user_data[0].source.domain_id != r.source.domain_id
         {
             return false;
@@ -825,18 +881,13 @@ impl Builder<'_> {
                     self.data.opaque_user_data.push(OpaqueUserData {
                         source_record_id: r.id.clone(),
                         source: r.source.clone(),
-                        profile: r
-                            .user_data
-                            .as_ref()
-                            .expect("checked layout")
-                            .profile
-                            .clone(),
+                        profile: r.user_data().expect("checked layout").profile.clone(),
                     });
                     self.last = None;
                     return Ok(());
                 }
-                if self.options.inventory_user_data_record.as_deref() == Some(r.id.as_str())
-                    && r.user_data.is_some()
+                if self.options.inventory_user_data_record.as_deref() == Some(&*r.id)
+                    && r.user_data().is_some()
                     && r.scope.is_none()
                     && self.stack.len() == 1
                     && self.stack[0] == self.import_node
@@ -855,12 +906,7 @@ impl Builder<'_> {
                     self.data.opaque_user_data.push(OpaqueUserData {
                         source_record_id: r.id.clone(),
                         source: r.source.clone(),
-                        profile: r
-                            .user_data
-                            .as_ref()
-                            .expect("checked layout")
-                            .profile
-                            .clone(),
+                        profile: r.user_data().expect("checked layout").profile.clone(),
                     });
                     self.last = None;
                     return Ok(());
@@ -902,7 +948,7 @@ impl Builder<'_> {
                     node_id: self.data.nodes[n].id.clone(),
                     source_record_id: r.id.clone(),
                     source: r.source.clone(),
-                    camera_source: r.camera.as_ref().expect("framed camera").settings.clone(),
+                    camera_source: r.camera().expect("framed camera").settings.clone(),
                     camera,
                     status: if usable {
                         Status::Complete
@@ -919,7 +965,7 @@ impl Builder<'_> {
                 )?;
                 self.budget.charge_output(2048)?;
                 self.issue(r,"hsf.texture_definition","Texture definition retained; image lookup and texture effects are not evaluated")?;
-                let l = r.texture.as_ref().expect("framed texture");
+                let l = r.texture().expect("framed texture");
                 let options = texture::decode_options(self.doc, l, self.budget)?;
                 let name = primitive::text(self.doc, &l.name, None, self.budget)?;
                 let image = primitive::text(self.doc, &l.image, None, self.budget)?;
@@ -945,7 +991,7 @@ impl Builder<'_> {
                 )?;
                 self.budget.charge_output(2048)?;
                 let (camera, usable) = view::decode(self.doc, r)?;
-                let layout = r.view.as_ref().expect("framed view");
+                let layout = r.view().expect("framed view");
                 let name = primitive::text(self.doc, &layout.name, None, self.budget)?;
                 if !usable {
                     self.issue(
@@ -1104,10 +1150,9 @@ impl Builder<'_> {
             b'J' | b'f' => self.definition(r, n)?,
             b'+' | b'=' | 0x0e => {
                 let l = r
-                    .marker_size
-                    .as_ref()
-                    .or(r.line_weight.as_ref())
-                    .or(r.edge_weight.as_ref())
+                    .marker_size()
+                    .or(r.line_weight())
+                    .or(r.edge_weight())
                     .expect("framed size");
                 let units = match l.units {
                     None => "relative",
@@ -1118,13 +1163,13 @@ impl Builder<'_> {
                     Some(4) => "pixels",
                     _ => unreachable!("syntax validates units"),
                 };
-                let attribute = Some(Attribute {
+                let attribute = Some(Arc::new(Attribute {
                     value: MarkerSize {
                         value: f32::from_bits(l.value_bits).abs(),
                         units: units.into(),
                     },
                     source: r.source.clone(),
-                });
+                }));
                 if r.opcode == b'+' {
                     self.display_mut(n)?.marker_size = attribute;
                 } else if r.opcode == b'=' {
@@ -1135,14 +1180,14 @@ impl Builder<'_> {
             }
             b'$' => {
                 self.budget.charge_output(4096)?;
-                self.display_mut(n)?.texture_matrix = Some(Attribute {
+                self.display_mut(n)?.texture_matrix = Some(Arc::new(Attribute {
                     value: matrix(
                         self.doc
                             .source_bytes(r.payload.as_ref().expect("texture matrix"))
                             .expect("span"),
                     )?,
                     source: r.source.clone(),
-                });
+                }));
                 self.data.rendering_options.push(RenderingOptions {
                     line_style_binding: None,
                     glyph_binding: None,
@@ -1159,27 +1204,26 @@ impl Builder<'_> {
                 self.budget.charge_output(2048)?;
                 let settings = self.render_settings(r)?;
                 self.issue(r, "hsf.rendering_semantics", "Render setting operands are retained; their effects are not evaluated and placements are withheld")?;
-                if let Some(color) = &r.indexed_color {
-                    for bit in 0..32 {
-                        if color.geometry_mask & 0x017f7f7f & (1 << bit) != 0 {
-                            self.display_mut(n)?.colors[bit] = None;
-                        }
+                if let Some(color) = &r.indexed_color() {
+                    let mask = color.geometry_mask & 0x017f7f7f;
+                    if mask != 0 {
+                        self.display_mut(n)?.colors.assign(mask, None);
                     }
-                    self.data.nodes[n].face_color = self.data.nodes[n].display.colors[0].clone();
+                    self.data.nodes[n].face_color =
+                        self.data.nodes[n].display.colors.get(0).cloned();
                 }
                 if r.opcode == b'"' {
                     self.texture_use(r, n)?;
-                    let layout = r.rendering.as_ref().expect("framed material");
+                    let layout = r.rendering().expect("framed material");
                     if layout.value & 1 != 0 {
                         // An unevaluated diffuse assignment supersedes known
                         // RGB values. Do not expose a stale local face color.
-                        for bit in 0..32 {
-                            if layout.mask & 0x017f7f7f & (1 << bit) != 0 {
-                                self.display_mut(n)?.colors[bit] = None;
-                            }
+                        let mask = (layout.mask & 0x017f7f7f) as u32;
+                        if mask != 0 {
+                            self.display_mut(n)?.colors.assign(mask, None);
                         }
                         self.data.nodes[n].face_color =
-                            self.data.nodes[n].display.colors[0].clone();
+                            self.data.nodes[n].display.colors.get(0).cloned();
                     }
                 }
                 self.data.rendering_options.push(RenderingOptions {
@@ -1194,7 +1238,7 @@ impl Builder<'_> {
                 });
             }
             b'V' => {
-                let l = r.visibility.as_ref().expect("framed visibility");
+                let l = r.visibility().expect("framed visibility");
                 if l.mask & 0x0400_0000 != 0 {
                     self.budget.charge_output(2048)?;
                     self.issue(r, "hsf.visibility_geometry_bit26",
@@ -1210,15 +1254,21 @@ impl Builder<'_> {
                         interpretation_status: Status::Unsupported,
                     });
                 }
-                for bit in 0..32 {
-                    if l.mask & 0x037f_ff7f & (1 << bit) != 0 {
-                        self.display_mut(n)?.visibility[bit] = Some(Attribute {
-                            value: l.value & (1 << bit) != 0,
-                            source: r.source.clone(),
-                        });
+                let mask = l.mask & 0x037f_ff7f;
+                if mask != 0 {
+                    let visibility = &mut self.display_mut(n)?.visibility;
+                    for (bits, value) in [(mask & l.value, true), (mask & !l.value, false)] {
+                        visibility.assign(
+                            bits,
+                            Some(Attribute {
+                                value,
+                                source: r.source.clone(),
+                            }),
+                        );
                     }
                 }
-                self.data.nodes[n].face_visible = self.data.nodes[n].display.visibility[0].clone();
+                self.data.nodes[n].face_visible =
+                    self.data.nodes[n].display.visibility.get(0).cloned();
             }
             b'~' => {
                 let mask = r.value.expect("geometry mask");
@@ -1226,22 +1276,19 @@ impl Builder<'_> {
                     .doc
                     .source_bytes(r.payload.as_ref().expect("attribute"))
                     .expect("span");
-                for bit in 0..32 {
-                    if mask & 0x017f7f7f & (1 << bit) == 0 {
-                        continue;
-                    }
-                    self.display_mut(n)?.colors[bit] = Some(Attribute {
-                        value: bytes.try_into().expect("rgb"),
-                        source: r.source.clone(),
-                    });
+                if mask & 0x017f7f7f != 0 {
+                    self.display_mut(n)?.colors.assign(
+                        mask & 0x017f7f7f,
+                        Some(Attribute {
+                            value: bytes.try_into().expect("rgb"),
+                            source: r.source.clone(),
+                        }),
+                    );
                 }
-                self.data.nodes[n].face_color = self.data.nodes[n].display.colors[0].clone();
+                self.data.nodes[n].face_color = self.data.nodes[n].display.colors.get(0).cloned();
             }
             b'X' | 0x10 | b'l' | b'L' | b'G' | b'C' | b'c' | b'T' | b'x' => {
-                if r.primitive
-                    .as_ref()
-                    .is_some_and(|p| p.text_region.is_some())
-                {
+                if r.primitive().is_some_and(|p| p.text_region.is_some()) {
                     self.budget.charge_output(2048)?;
                     self.issue(r, "hsf.text_region_semantics",
                         "Text region is retained; coordinate space and glyph layout are not evaluated and placements are withheld")?;
@@ -1257,8 +1304,7 @@ impl Builder<'_> {
                     });
                 }
                 let parts = r
-                    .poly_polyline
-                    .as_ref()
+                    .poly_polyline()
                     .map_or(1, |l| u64::from(l.primitive_count));
                 charge(
                     &mut self.primitive_parts,
@@ -1283,7 +1329,7 @@ impl Builder<'_> {
                 p.id = format!("primitive:{i}");
                 p.owner_node_id = self.data.nodes[n].id.clone();
                 self.data.primitives.push(p);
-                let object = Object::Primitive(i, IDENTITY);
+                let object = Object::Primitive(i, None);
                 self.links[n].push(Link {
                     object: object.clone(),
                     reference: None,
@@ -1296,12 +1342,15 @@ impl Builder<'_> {
                     node_id: self.data.nodes[n].id.clone(),
                     source_record_id: r.id.clone(),
                     source: r.source.clone(),
-                    layout: *r.user_index.clone().expect("framed user index"),
+                    layout: r.user_index().cloned().expect("framed user index"),
                     interpretation_status: Status::Unsupported,
                 });
             }
             b'm' => {
-                let layout = *r.user_index_data.clone().expect("framed user index data");
+                let layout = r
+                    .user_index_data()
+                    .cloned()
+                    .expect("framed user index data");
                 self.budget
                     .charge_output(1024 + 64 * layout.entries.len() as u64)?;
                 self.data.user_index_data.push(UserIndexData {
@@ -1329,7 +1378,7 @@ impl Builder<'_> {
             }
             b'S' | b'M' => {
                 self.last = None;
-                if let Some(layout) = r.shell.as_ref().filter(|l| l.null) {
+                if let Some(layout) = r.shell().filter(|l| l.null) {
                     limit(
                         (self.data.meshes.len()
                             + self.data.null_shells.len()
@@ -1357,8 +1406,7 @@ impl Builder<'_> {
                     self.last = Some(Object::NullShell(i));
                     return Ok(());
                 }
-                if r.shell
-                    .as_ref()
+                if r.shell()
                     .is_some_and(|layout| layout.refinement_index.is_some() || layout.lod != 0)
                 {
                     self.refine_shell(r, n)?;
@@ -1372,11 +1420,11 @@ impl Builder<'_> {
                     self.options.max_meshes,
                     "hsf.limit_meshes",
                 )?;
-                if r.mesh.as_ref().is_some_and(|m| {
+                if r.mesh().is_some_and(|m| {
                     m.attributes
                         .iter()
                         .any(|a| ![1, 3, 17, 27, 99].contains(&a.opcode))
-                }) || r.shell.as_ref().is_some_and(|s| {
+                }) || r.shell().is_some_and(|s| {
                     s.attributes
                         .iter()
                         .any(|a| ![1, 3, 17, 27, 99].contains(&a.opcode))
@@ -1406,7 +1454,7 @@ impl Builder<'_> {
                 m.owner_node_id = self.data.nodes[n].id.clone();
                 self.full_mesh_count += 1;
                 self.data.meshes.push(m);
-                let object = Object::Mesh(i, IDENTITY);
+                let object = Object::Mesh(i, None);
                 self.links[n].push(Link {
                     object: object.clone(),
                     reference: None,
@@ -1520,12 +1568,14 @@ impl Builder<'_> {
                     return Ok(());
                 }
                 let target = match source {
-                    Some(Object::Mesh(i, from)) => {
-                        Some(Object::Mesh(i, multiply(from, transform)?))
-                    }
-                    Some(Object::Primitive(i, from)) => {
-                        Some(Object::Primitive(i, multiply(from, transform)?))
-                    }
+                    Some(Object::Mesh(i, from)) => Some(Object::Mesh(
+                        i,
+                        local_of(multiply(local_matrix(&from), transform)?),
+                    )),
+                    Some(Object::Primitive(i, from)) => Some(Object::Primitive(
+                        i,
+                        local_of(multiply(local_matrix(&from), transform)?),
+                    )),
                     _ => None,
                 };
                 if target.is_none() {
@@ -1618,10 +1668,10 @@ impl Builder<'_> {
             progress = false;
             let mut remaining = Vec::with_capacity(pending.len());
             for p in pending {
-                match self.null_meshes.get(&p.from).copied() {
+                match self.null_meshes.get(&p.from).cloned() {
                     Some(Some((mesh, local))) => {
                         progress = true;
-                        let composed = multiply(local, p.transform)?;
+                        let composed = local_of(multiply(local_matrix(&local), p.transform)?);
                         if self.null_meshes.contains_key(&p.to) {
                             // A placeholder with its own update or a second instance
                             // assignment is ambiguous; no winner is selected.
@@ -1849,11 +1899,25 @@ impl Builder<'_> {
             node: usize,
             next: usize,
             matrix: Matrix,
-            color: Option<Attribute<[u8; 3]>>,
-            visible: Option<Attribute<bool>>,
-            path: Vec<String>,
+            path: Arc<[Arc<str>]>,
             display: Arc<DisplayAttributes>,
         }
+        // Paths share their ids: one allocation per node and reference here,
+        // not one per id per instance.
+        self.budget
+            .charge_output((self.data.nodes.len() + self.data.references.len()) as u64 * 48)?;
+        let node_ids: Vec<Arc<str>> = self
+            .data
+            .nodes
+            .iter()
+            .map(|n| Arc::from(n.id.as_str()))
+            .collect();
+        let reference_ids: Vec<Arc<str>> = self
+            .data
+            .references
+            .iter()
+            .map(|r| Arc::from(&*r.id))
+            .collect();
         let root = &self.data.nodes[0];
         limit(1, self.options.max_depth, "hsf.limit_scene_depth")?;
         self.budget.charge_output(8192)?;
@@ -1862,17 +1926,7 @@ impl Builder<'_> {
             node: 0,
             next: 0,
             matrix: root.local_transform.as_ref().map_or(IDENTITY, |a| a.value),
-            color: self.styled_displays[0]
-                .as_deref()
-                .unwrap_or(&*root.display)
-                .colors[0]
-                .clone(),
-            visible: self.styled_displays[0]
-                .as_deref()
-                .unwrap_or(&*root.display)
-                .visibility[0]
-                .clone(),
-            path: vec![root.id.clone()],
+            path: Arc::from([node_ids[0].clone()]),
             display: Arc::new(
                 self.styled_displays[0]
                     .as_deref()
@@ -1901,17 +1955,25 @@ impl Builder<'_> {
                     continue;
                 }
             }
-            // A visit itself retains nothing; the cloned path and the instance struct
-            // are charged only where an instance is kept (below), and a descended
-            // segment pays for its inherited attributes. No flat 16 KiB per visit.
-            let path_bytes: u64 = f.path.iter().map(|s| s.len() as u64 + 32).sum::<u64>() + 64;
+            // A visit itself retains nothing; a new path slice (a reference link
+            // or a descended segment) and the instance struct are charged where
+            // they are kept, and a descended segment pays for its inherited
+            // attributes. No flat 16 KiB per visit.
+            let slice_bytes = (f.path.len() as u64 + 1) * 16 + 32;
             self.budget.charge_output(64)?;
-            let mut path = f.path.clone();
-            if let Some(i) = link.reference {
-                path.push(self.data.references[i].id.clone());
-            }
+            let (path, path_bytes) = match link.reference {
+                Some(i) => (
+                    f.path
+                        .iter()
+                        .cloned()
+                        .chain([reference_ids[i].clone()])
+                        .collect(),
+                    slice_bytes,
+                ),
+                None => (f.path.clone(), 0),
+            };
             let object = match link.object {
-                Object::NullShell(i) => match self.null_meshes.get(&i).copied().flatten() {
+                Object::NullShell(i) => match self.null_meshes.get(&i).cloned().flatten() {
                     Some((m, local)) => Object::Mesh(m, local),
                     None => Object::NullShell(i),
                 },
@@ -1926,7 +1988,7 @@ impl Builder<'_> {
                         self.options.max_instances,
                         "hsf.limit_instances",
                     )?;
-                    let world = multiply(local, f.matrix)?;
+                    let world = multiply(local_matrix(&local), f.matrix)?;
                     let det = determinant(world);
                     if !det.is_finite() {
                         return Err(error(
@@ -1946,8 +2008,6 @@ impl Builder<'_> {
                         path,
                         world_transform: world,
                         determinant: det,
-                        face_color: f.color.clone(),
-                        face_visible: f.visible.clone(),
                     });
                 }
                 Object::Primitive(i, local) => {
@@ -1957,7 +2017,7 @@ impl Builder<'_> {
                         self.options.max_instances,
                         "hsf.limit_instances",
                     )?;
-                    let world = multiply(local, f.matrix)?;
+                    let world = multiply(local_matrix(&local), f.matrix)?;
                     let det = determinant(world);
                     if !det.is_finite() {
                         return Err(error(
@@ -1993,8 +2053,6 @@ impl Builder<'_> {
                         node.local_transform.as_ref().map_or(IDENTITY, |a| a.value),
                         f.matrix,
                     )?;
-                    let color = display.colors[0].clone();
-                    let visible = display.visibility[0].clone();
                     let world_handedness = node
                         .world_handedness
                         .clone()
@@ -2021,16 +2079,16 @@ impl Builder<'_> {
                         self.options.max_depth,
                         "hsf.limit_scene_depth",
                     )?;
-                    path.push(node.id.clone());
-                    self.budget
-                        .charge_output(std::mem::size_of::<DisplayAttributes>() as u64 + 512)?;
+                    let path: Arc<[Arc<str>]> =
+                        path.iter().cloned().chain([node_ids[n].clone()]).collect();
+                    self.budget.charge_output(
+                        std::mem::size_of::<DisplayAttributes>() as u64 + 512 + slice_bytes,
+                    )?;
                     frames.push(Frame {
                         world_handedness,
                         node: n,
                         next: 0,
                         matrix,
-                        color,
-                        visible,
                         path,
                         display: Arc::new(display),
                     });

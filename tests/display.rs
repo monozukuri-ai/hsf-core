@@ -66,10 +66,7 @@ fn exact_framing_and_masks_in_all_supported_versions() {
                 continue;
             }
             let r = &p.data.records[0];
-            assert_eq!(
-                r.visibility.as_deref(),
-                Some(&VisibilityLayout { mask, value })
-            );
+            assert_eq!(r.visibility(), Some(&VisibilityLayout { mask, value }));
             assert_eq!(r.source.length, b.len() as u64 - 1);
             let s = scene(
                 &p,
@@ -78,7 +75,7 @@ fn exact_framing_and_masks_in_all_supported_versions() {
             )
             .unwrap();
             for bit in 0..32 {
-                let a = &s.data.nodes[0].display.visibility[bit];
+                let a = &s.data.nodes[0].display.visibility.get(bit);
                 if mask & 0x037fff7f & (1 << bit) == 0 {
                     assert!(a.is_none());
                 } else {
@@ -98,16 +95,19 @@ fn observed_visibility_bit26_has_fixed_framing_but_no_placement_semantics() {
         assert_eq!(p.status, Status::Complete);
         assert_eq!(p.data.records[0].source.length, 9);
         assert_eq!(p.data.records[1].source.offset, 24);
-        assert_eq!(p.data.records[0].visibility.as_ref().unwrap().value, value);
+        assert_eq!(p.data.records[0].visibility().unwrap().value, value);
         let s = scene_body(&body, ParseMode::Partial).unwrap();
         assert_eq!(s.status, Status::Partial);
         assert_eq!(s.data.primitives.len(), 1);
         assert!(s.data.primitive_instances.is_empty());
         assert_eq!(s.data.placement_status, Status::Unsupported);
         assert_eq!(s.diagnostics[0].code, "hsf.visibility_geometry_bit26");
-        assert!(s.data.nodes[0].display.visibility[26].is_none());
+        assert!(s.data.nodes[0].display.visibility.get(26).is_none());
         assert_eq!(
-            s.data.nodes[0].display.visibility[0]
+            s.data.nodes[0]
+                .display
+                .visibility
+                .get(0)
                 .as_ref()
                 .unwrap()
                 .value,
@@ -226,8 +226,11 @@ fn marker_units_visibility_inherit_override_and_reopen_without_changing_geometry
             (a.value.value, a.value.units.as_str()),
             (expected.0, expected.1)
         );
-        assert_eq!(i.display.visibility[9].as_ref().unwrap().value, expected.2);
-        assert!(i.display.visibility[24].as_ref().unwrap().value);
+        assert_eq!(
+            i.display.visibility.get(9).as_ref().unwrap().value,
+            expected.2
+        );
+        assert!(i.display.visibility.get(24).as_ref().unwrap().value);
         assert_eq!(i.world_transform, IDENTITY);
     }
     b.pop();
@@ -271,7 +274,7 @@ fn marker_units_visibility_inherit_override_and_reopen_without_changing_geometry
     for value in [0., -0.] {
         let p = parse_body(&[size(value, None), vec![0]].concat(), ParseMode::Strict).unwrap();
         assert_eq!(
-            p.data.records[0].marker_size.as_ref().unwrap().value_bits,
+            p.data.records[0].marker_size().unwrap().value_bits,
             value.to_bits()
         );
     }
@@ -285,7 +288,7 @@ fn definitions_keep_duplicates_raw_data_and_distinct_name_encoding() {
     b.extend(line());
     b.push(0);
     let p = parse_body(&b, ParseMode::Strict).unwrap();
-    assert_eq!(p.data.records[2].font.as_ref().unwrap().data.length, 300);
+    assert_eq!(p.data.records[2].font().unwrap().data.length, 300);
     let s = scene_body(&b, ParseMode::Partial).unwrap();
     assert_eq!(s.data.line_styles.len(), 2);
     assert_eq!(s.data.fonts.len(), 1);

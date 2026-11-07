@@ -8,7 +8,7 @@ pub(super) fn parameters(
     r: &Record,
     budget: &mut Budget,
 ) -> Result<(Option<VertexParameters>, Vec<f32>), HsfError> {
-    let layout = if let Some(m) = &r.mesh {
+    let layout = if let Some(m) = &r.mesh() {
         m.attributes
             .iter()
             .find(|a| matches!(a.opcode, 3 | 27))
@@ -23,7 +23,7 @@ pub(super) fn parameters(
                 )
             })
     } else {
-        let s = r.shell.as_ref().expect("shell");
+        let s = r.shell().expect("shell");
         s.attributes
             .iter()
             .find(|a| matches!(a.opcode, 3 | 27))
@@ -110,7 +110,7 @@ pub(super) fn parameters(
 
 impl Builder<'_> {
     pub(super) fn refine_shell(&mut self, r: &Record, n: usize) -> Result<(), HsfError> {
-        let s = r.shell.as_ref().expect("shell");
+        let s = r.shell().expect("shell");
         let parameter_index = self.data.shell_parameter_sets.len();
         self.shell_parameters(r, n)?;
         let target = s
@@ -129,7 +129,7 @@ impl Builder<'_> {
                 return Ok(());
             }
         };
-        if let Some(previous) = self.null_meshes.get(&target).copied() {
+        if let Some(previous) = self.null_meshes.get(&target).cloned() {
             self.unresolved_refinement = true;
             self.null_meshes.insert(target, None);
             self.data.null_shells[target].mesh_id = None;
@@ -211,7 +211,7 @@ impl Builder<'_> {
             };
         }
         self.data.null_shells[target].mesh_id = Some(mesh.id.clone());
-        self.null_meshes.insert(target, Some((i, IDENTITY)));
+        self.null_meshes.insert(target, Some((i, None)));
         self.data.meshes.push(mesh);
         // Refinement updates the original object, not the current segment.
         self.last = Some(Object::NullShell(target));
@@ -219,7 +219,7 @@ impl Builder<'_> {
     }
 
     pub(super) fn shell_parameters(&mut self, r: &Record, n: usize) -> Result<(), HsfError> {
-        let s = r.shell.as_ref().expect("shell");
+        let s = r.shell().expect("shell");
         if !s.attributes.iter().any(|a| matches!(a.opcode, 3 | 27)) {
             return Ok(());
         }
@@ -360,50 +360,75 @@ pub(super) fn decode(
     count: &mut u64,
     budget: &mut Budget,
 ) -> Result<(Mesh, Option<&'static str>), HsfError> {
-    if r.mesh.is_some() {
+    if r.mesh().is_some() {
         return grid(doc, r, options, count, budget).map(|m| (m, None));
     }
-    let s = r.shell.as_ref().expect("framed shell");
+    let s = r.shell().expect("framed shell");
     // Includes vector capacity growth and retained metadata before allocation.
     budget
         .charge_output(1024 + u64::from(s.vertex_count) * 24 + u64::from(s.face_value_count) * 8)?;
-    let vertices = match &s.point_quantization {
-        Some(q) => dequantized_points(doc, s, q),
-        None => vectors(doc, &s.vertices, r)?,
-    };
-    let (vertex_normals, normals) = polyhedron::normals(doc, r, budget)?;
+    let (mut vertex_normals, mut normals) = polyhedron::normals(doc, r, budget)?;
     let entity_metadata = polyhedron::metadata(doc, r, budget)?;
-    let signed = s.extended_flags & 4 != 0;
-    let face_list: Vec<i32> = doc
-        .source_bytes(&s.faces)
-        .expect("span")
-        .chunks_exact(usize::from(s.face_bits / 8))
-        .map(|b| {
-            let value = match (s.face_bits, signed) {
-                (8, true) => i64::from(b[0] as i8),
-                (8, false) => i64::from(b[0]),
-                (16, true) => i64::from(i16::from_le_bytes(b.try_into().expect("two"))),
-                (16, false) => i64::from(u16::from_le_bytes(b.try_into().expect("two"))),
-                (32, true) => i64::from(i32::from_le_bytes(b.try_into().expect("four"))),
-                (32, false) => i64::from(u32::from_le_bytes(b.try_into().expect("four"))),
-                _ => unreachable!("verified width"),
-            };
-            i32::try_from(value).map_err(|_| {
-                fail(
-                    r,
-                    "hsf.invalid_face_value",
-                    Status::Invalid,
-                    "Face value exceeds signed index range",
-                )
+    let (vertices, face_list) = if let Some(c) = &s.connectivity {
+        let stream = doc.source_bytes(&c.stream).expect("framed stream");
+        let decoded = super::edgebreaker::decode(stream, c, budget).map_err(|e| {
+            let d = e.diagnostic;
+            fail(r, &d.code, d.classification, &d.message)
+        })?;
+        // Optional normals stored beside the stream take precedence.
+        if vertex_normals.is_none() && !decoded.normals.is_empty() {
+            vertex_normals = Some(VertexNormals {
+                count: s.vertex_count,
+                source: r.source.clone(),
+                values_source: c.stream.clone(),
+                encoding: "connectivity".into(),
+                compression: Some(c.scheme),
+                bits_per_sample: Some(decoded.normal_bits),
+                packing: "edgebreaker".into(),
+                bounds: vec![[-1., 1.]; 3],
+            });
+            normals = decoded.normals;
+        }
+        (decoded.vertices, decoded.face_list)
+    } else {
+        let vertices = match &s.point_quantization {
+            Some(q) => dequantized_points(doc, s, q),
+            None => vectors(doc, &s.vertices, r)?,
+        };
+        let signed = s.extended_flags & 4 != 0;
+        let face_list: Vec<i32> = doc
+            .source_bytes(&s.faces)
+            .expect("span")
+            .chunks_exact(usize::from(s.face_bits / 8))
+            .map(|b| {
+                let value = match (s.face_bits, signed) {
+                    (8, true) => i64::from(b[0] as i8),
+                    (8, false) => i64::from(b[0]),
+                    (16, true) => i64::from(i16::from_le_bytes(b.try_into().expect("two"))),
+                    (16, false) => i64::from(u16::from_le_bytes(b.try_into().expect("two"))),
+                    (32, true) => i64::from(i32::from_le_bytes(b.try_into().expect("four"))),
+                    (32, false) => i64::from(u32::from_le_bytes(b.try_into().expect("four"))),
+                    _ => unreachable!("verified width"),
+                };
+                i32::try_from(value).map_err(|_| {
+                    fail(
+                        r,
+                        "hsf.invalid_face_value",
+                        Status::Invalid,
+                        "Face value exceeds signed index range",
+                    )
+                })
             })
-        })
-        .collect::<Result<_, _>>()?;
+            .collect::<Result<_, _>>()?;
+        (vertices, face_list)
+    };
     let mut triangles = vec![];
     let mut triangle_faces = vec![];
     let mut unsupported = None;
     let mut offset = 0;
     let mut face = 0;
-    let strips = s.flags & 4 != 0;
+    // The connectivity decoder emits independent triangles.
+    let strips = s.flags & 4 != 0 && s.connectivity.is_none();
     while offset < face_list.len() {
         let value = face_list[offset];
         offset += 1;
@@ -512,7 +537,7 @@ fn grid(
     count: &mut u64,
     budget: &mut Budget,
 ) -> Result<Mesh, HsfError> {
-    let l = r.mesh.as_ref().expect("framed rectangular mesh");
+    let l = r.mesh().expect("framed rectangular mesh");
     let cells = u64::from(l.rows - 1) * u64::from(l.columns - 1);
     charge(
         count,

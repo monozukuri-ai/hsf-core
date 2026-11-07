@@ -46,7 +46,7 @@ fn image_is_opt_in_partial_and_preserves_owned_spans() {
     assert_eq!(p.status, Status::Partial);
     assert!(p.unparsed.is_empty());
     assert_eq!(p.data.records.len(), 2);
-    let i = p.data.records[0].image.as_ref().unwrap();
+    let i = p.data.records[0].image().unwrap();
     assert_eq!((i.width, i.height), (3, 1));
     assert_eq!(p.data.source_bytes(&i.alpha).unwrap(), &[255]);
     assert_eq!(p.data.source_bytes(&i.name).unwrap(), b"n");

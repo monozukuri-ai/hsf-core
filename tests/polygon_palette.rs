@@ -73,7 +73,7 @@ fn polygon_order_closure_identity_and_versions() {
 fn palette_framing_is_distinct_from_scene_interpretation() {
     let b = [palette(), polygon(), vec![0]].concat();
     let p = parsed(&b, ParseMode::Strict).unwrap();
-    let map = p.data.records[0].color_map.as_ref().unwrap();
+    let map = p.data.records[0].color_map().unwrap();
     assert_eq!((map.format, map.entry_count), (0, 2));
     assert_eq!(p.data.source_bytes(&map.colors), Some(&palette()[6..]));
     let s = scene(

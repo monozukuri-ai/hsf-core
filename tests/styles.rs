@@ -58,12 +58,12 @@ fn local_style_parent_order_and_final_reopen_source() {
     assert_eq!(s.data.style_resolutions.len(), 2);
     assert_eq!(s.data.primitive_instances.len(), 2);
     for (i, expected) in s.data.primitive_instances.iter().zip([7, 9]) {
-        let a = i.display.colors[0].as_ref().unwrap();
+        let a = i.display.colors.get(0).unwrap();
         assert_eq!(a.value, [expected, 2, 3]);
         assert_eq!(p.data.source_bytes(&a.source).unwrap(), color(expected));
-        assert!(i.display.visibility[0].is_none());
+        assert!(i.display.visibility.get(0).is_none());
     }
-    assert!(s.data.nodes[4].display.colors[0].is_none());
+    assert!(s.data.nodes[4].display.colors.get(0).is_none());
 }
 
 #[test]

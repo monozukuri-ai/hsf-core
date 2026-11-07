@@ -1,12 +1,60 @@
 # Changelog
 
-## Unreleased (0.1.0-alpha.5, contract 37)
+## Unreleased (0.1.0-alpha.6, contract 38)
 
-Nine of 43 uploaded eDrawings files still stopped with alpha.4. Six now parse
-to the end: four SOLIDWORKS files at 19.10 that use two records alpha.4 did not
-frame, and one file each from SOLIDWORKS 2011 and 2012 (HSF 17.85 and 18.00).
-The Creo 11 publisher's file (21.15) now reads up to its connectivity-compressed
-Shells, which remain unsupported.
+Connectivity-compressed Shells, as the Creo 11 eDrawings publisher writes them,
+are decoded, and the scenes of large assemblies are built with much less memory.
+
+Connectivity compression
+
+- Shells with flag 0x40 (compression scheme 5, edgebreaker) are framed: the
+  scheme byte, the stream's byte length and the stream, then the optional
+  attributes. The stream header gives the point count.
+  `ShellLayout.connectivity` (`ConnectivityLayout`) records the stream and its
+  layout; `vertices` and `faces` are empty for such Shells.
+- The scene decodes stream layout 2, as the Creo 11 eDrawings publisher writes
+  it: C/L/E/R/S opcodes over a boundary loop (splits are located by a pre-pass
+  over each component), dummy vertices removed with their triangles, and points
+  and normals quantized within the stored box. Each component's first triangle
+  is stored absolutely and every later vertex as a residual from parallelogram
+  prediction. Decoded normals become the mesh's vertex normals unless the Shell
+  stores its own.
+- Merge opcodes (M, M2), patched vertices, boxes supplied by the toolkit and
+  unknown table flags stop with `hsf.shell_connectivity_feature`; other schemes
+  and layouts with `hsf.shell_connectivity_scheme`; streams without quantized
+  points with `hsf.shell_connectivity_points`; malformed streams with
+  `hsf.invalid_shell_connectivity`. `hsf.shell_connectivity_compression` is no
+  longer reported.
+
+Memory (breaking changes to public types)
+
+- `SourceSpan.domain_id` and `SourceDomain.id` are `Arc<str>`, shared by every
+  span of a domain.
+- `Record`: the 23 optional layouts are one `layout: Option<RecordLayout>`,
+  read with accessors of the old names (`shell()`, `user_data()`, ...); `id`
+  and `scope` are `Arc<str>` and `kind` is `Cow<'static, str>`. Serialized
+  records carry `layout` (an object tagged by layout name) instead of 23 keys.
+- `DisplayAttributes`: optional attributes are `Option<Arc<Attribute<_>>>`, and
+  `colors` and `visibility` are `Slots`, runs of slots sharing a value (read with
+  `get(slot)`, `iter()` and `mask()`; still serialized as 32 entries).
+- `Instance.path` and `PrimitiveInstance.path` are `Arc<[Arc<str>]>`, shared by
+  the instances placed from one segment visit; `Instance::face_color()` and
+  `face_visible()` read the display attributes instead of storing copies.
+- Scene `source_record_id` fields are `Arc<str>`; scene `kind` fields,
+  `OperandField` and `RenderingOperand` names and encodings, and
+  `EntityMetadataField.kind` are `Cow<'static, str>`.
+- Placed definitions share their local transform (none for the identity), and
+  meshes, primitives, references and instances are sized from the syntax
+  records within the configured limits. Budget charges computed from struct
+  sizes follow the smaller structures; instance paths are charged where a new
+  path is built.
+
+## 0.1.0-alpha.5 (contract 37)
+
+SOLIDWORKS 2011 and 2012 (HSF 17.85 and 18.00) and the Creo 11 eDrawings
+publisher (21.15) are read, and two more records that SOLIDWORKS writes at 19.10
+are framed. Creo 11 files read up to their connectivity-compressed Shells, which
+remain unsupported.
 
 - `17.85`, `18.00` and `21.15` join the syntax profiles (`SYNTAX_VERSIONS`). The
   existing version-gated rules apply to them; 21.15 is framed as 20.90,
@@ -16,10 +64,10 @@ Shells, which remain unsupported.
   masks, one byte each, or two when extended. It governs picking only, so the
   scene ignores it.
 - Rendering Options accept simple reflection (second-word bit 0x80000, 15.50+),
-  read after the simple shadow as in the SDK reader: an options byte (a second
-  when bit 7 is set), then the plane, opacity, blur and attenuation its flags
-  select. Unknown option bits stop with `hsf.simple_reflection_mask`. SOLIDWORKS
-  writes it switched off, without further operands.
+  read after the simple shadow: an options byte (a second when bit 7 is set),
+  then the plane, opacity, blur and attenuation its flags select. Unknown
+  option bits stop with `hsf.simple_reflection_mask`. SOLIDWORKS writes it
+  switched off, without further operands.
 - Shells with quantized points (flag 1) are read when the scheme is 1 (trivial):
   the count, the box the codes span, 2–31 bits per coordinate, then the codes,
   packed as quantized parameters are. `ShellLayout.point_quantization`
@@ -36,9 +84,7 @@ Shells, which remain unsupported.
 ## 0.1.0-alpha.4 (contract 36)
 
 SOLIDWORKS 2025 and 2026 write eDrawings as HSF 20.90, which alpha.3 refused at
-the header. Ten uploaded 20.90 files showed the differences below from 19.10;
-with them all ten parse to the end, and where a file stores real bounds the
-placed geometry matches them.
+the header. 20.90 differs from 19.10 as follows.
 
 - `20.90` joins the syntax profiles (`SYNTAX_VERSIONS`).
 - One byte follows the opcode of bounding (`B`, `b`), camera (`>`), view (`}`),
@@ -63,7 +109,7 @@ placed geometry matches them.
 ## 0.1.0-alpha.3 (contract 35)
 
 eDrawings 2026 (HOOPS 3DF 20.10 writer behind a 19.10 header) stopped alpha.2
-at four places; each is now framed from the shipped toolkit's grammar.
+at four places, which are now framed.
 
 - TKE_Priority (`0`, one i32 operand) is framed as `priority` and ignored by the
   scene. eDrawings 2026 writes it before component segments; alpha.2 stopped at
@@ -89,16 +135,15 @@ at four places; each is now framed from the shipped toolkit's grammar.
   absolute literal subtree plus its includes (`hsf.traversal_subtree` info;
   unknown paths place nothing with `hsf.traversal_root_unknown`), `Skip` builds
   the inventory without placements. Multi-configuration eDrawings assemblies
-  (eleven `configN` root children, 1.6 million instances) are placed one
+  (one `configN` root child per configuration) can be placed one
   configuration at a time. `user_option_text()` decodes option records from the
   syntax so callers can pick the subtree before the scene exists.
 - Memory: `Record` keeps its optional layouts boxed (1,920 → about 400 bytes
-  per record; a 745k-record assembly parses in 0.4 GB instead of 1.5 GB) and
-  `Instance`/`PrimitiveInstance.display` is an `Arc<DisplayAttributes>` shared
-  by the instances of one segment visit. The traversal budget charges the real
-  sizes (path bytes, instance struct, inherited attributes per visited segment)
-  instead of a flat 16 KiB per visit. JSON output is unchanged; Rust callers
-  deref the boxes and the Arc.
+  per record) and `Instance`/`PrimitiveInstance.display` is an
+  `Arc<DisplayAttributes>` shared by the instances of one segment visit. The
+  traversal budget charges the real sizes (path bytes, instance struct,
+  inherited attributes per visited segment) instead of a flat 16 KiB per visit.
+  JSON output is unchanged; Rust callers deref the boxes and the Arc.
 - Capabilities add `segment_priority_framing`, `user_index_data_framing`,
   `rendering_options_extended2_framing`, `backquoted_segment_names` and
   `traversal_subtree`.

@@ -83,7 +83,7 @@ fn rendering_field_order_lengths_and_opaque_values_are_exact() {
         let p = parsed(&[b.clone(), vec![0]].concat(), "19.10", ParseMode::Strict).unwrap();
         let r = &p.data.records[0];
         assert_eq!(r.source.length, b.len() as u64);
-        let a = r.rendering.as_ref().unwrap();
+        let a = r.rendering().unwrap();
         assert!(!a.fields.is_empty());
         for f in &a.fields {
             assert!(p.data.source_bytes(&f.source).is_some());
@@ -108,7 +108,7 @@ fn rendering_field_order_lengths_and_opaque_values_are_exact() {
         ParseMode::Strict,
     )
     .unwrap();
-    let l = p.data.records[0].rendering.as_ref().unwrap();
+    let l = p.data.records[0].rendering().unwrap();
     assert_eq!(l.mask, 0x016180cc);
     assert_eq!(l.value, 0x014180cc);
     assert_eq!(
@@ -121,7 +121,7 @@ fn rendering_field_order_lengths_and_opaque_values_are_exact() {
         4
     );
     let p = parsed(&[material(), vec![0]].concat(), "19.10", ParseMode::Strict).unwrap();
-    let l = p.data.records[0].rendering.as_ref().unwrap();
+    let l = p.data.records[0].rendering().unwrap();
     assert_eq!(l.mask, 0x01808081);
     assert_eq!(l.value, 0x3ff);
     let env = l.fields.iter().find(|f| f.name == "environment").unwrap();
@@ -195,7 +195,7 @@ fn null_shell_precedence_tag_identity_and_reference_do_not_fabricate_meshes() {
     for flags in [0x80, 0x90, 0x96, 0xff] {
         let b = vec![b'S', flags, 2, 0, 3, b'q', b'r', 0, 0, 0, 0, 0];
         let p = parsed(&b, "19.10", ParseMode::Strict).unwrap();
-        let l = p.data.records[0].shell.as_ref().unwrap();
+        let l = p.data.records[0].shell().unwrap();
         assert!(l.null);
         assert_eq!(l.lod, 3);
         assert_eq!(l.vertices.length, 0);
@@ -243,7 +243,11 @@ fn literal_paths_create_parents_and_close_restores_the_previous_scope() {
     assert!(s.data.nodes[1].name_source.is_none());
     assert_eq!(s.data.nodes[2].parent_id.as_deref(), Some("segment:1"));
     assert_eq!(
-        s.data.primitive_instances[0].path,
+        s.data.primitive_instances[0]
+            .path
+            .iter()
+            .map(|p| &**p)
+            .collect::<Vec<_>>(),
         ["segment:0", "segment:1", "segment:2", "segment:3"]
     );
     assert_eq!(s.data.primitive_instances[1].node_id, "segment:0");
@@ -278,9 +282,9 @@ fn extended_rgb_and_line_weight_inherit_and_render_settings_withhold_placements(
     b.extend(b")\0");
     let s = scene_body(&b, ParseMode::Strict).unwrap();
     let d = &s.data.primitive_instances[0].display;
-    assert_eq!(d.colors[24].as_ref().unwrap().value, [1, 2, 3]);
+    assert_eq!(d.colors.get(24).as_ref().unwrap().value, [1, 2, 3]);
     for bit in [7, 15, 23] {
-        assert!(d.colors[bit].is_none());
+        assert!(d.colors.get(bit).is_none());
     }
     assert_eq!(d.line_weight.as_ref().unwrap().value.units, "pixels");
     b.pop();
@@ -300,14 +304,14 @@ fn extended_rgb_and_line_weight_inherit_and_render_settings_withhold_placements(
 fn diffuse_extended_lengths_and_resource_bounds_are_checked() {
     let s = scene_body(b"~\x01\xff\0\0\"\x01\x01\x03red\0", ParseMode::Partial).unwrap();
     assert!(s.data.nodes[0].face_color.is_none());
-    assert!(s.data.nodes[0].display.colors[0].is_none());
+    assert!(s.data.nodes[0].display.colors.get(0).is_none());
     let mut b = b"\"\x01\x01\xff".to_vec();
     b.extend(300i32.to_le_bytes());
     b.extend(vec![b'x'; 300]);
     b.push(0);
     let p = parsed(&b, "19.10", ParseMode::Strict).unwrap();
     assert_eq!(
-        p.data.records[0].rendering.as_ref().unwrap().fields[0]
+        p.data.records[0].rendering().unwrap().fields[0]
             .source
             .length,
         300

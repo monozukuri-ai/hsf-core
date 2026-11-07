@@ -5,7 +5,7 @@ use super::*;
 pub struct ImageDefinition {
     pub id: String,
     pub node_id: String,
-    pub source_record_id: String,
+    pub source_record_id: Arc<str>,
     pub source: SourceSpan,
     pub profile: String,
     pub name: TextValue,
@@ -31,7 +31,7 @@ impl Builder<'_> {
             "hsf.limit_definitions",
         )?;
         self.budget.charge_output(2048)?;
-        let layout = r.image.as_ref().expect("framed image");
+        let layout = r.image().expect("framed image");
         let name = primitive::text(self.doc, &layout.name, None, self.budget)?;
         let bytes = self
             .doc

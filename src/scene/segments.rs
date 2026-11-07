@@ -6,7 +6,7 @@ pub struct SegmentAlias {
     pub alias: String,
     pub target_path: String,
     /// First use of this assumed default binding, not a definition in the file.
-    pub source_record_id: String,
+    pub source_record_id: Arc<str>,
     pub source: SourceSpan,
     pub interpretation_status: Status,
 }
@@ -17,7 +17,7 @@ pub struct StyleSegmentReference {
     pub node_id: String,
     /// Existing target at the opcode; never backfilled from a later Open.
     pub target_id: Option<String>,
-    pub source_record_id: String,
+    pub source_record_id: Arc<str>,
     pub source: SourceSpan,
     pub path: TextValue,
     pub condition: Option<TextValue>,

@@ -37,7 +37,7 @@ pub(super) fn decode_options(
     };
     for f in &layout.fields {
         let bytes = doc.source_bytes(&f.source).expect("texture operand");
-        match f.name.as_str() {
+        match &*f.name {
             "value_scale" => {
                 out.value_scale = Some(Attribute {
                     value: std::array::from_fn(|i| {
@@ -120,7 +120,7 @@ pub(super) fn decode_options(
 pub struct TextureUse {
     pub id: String,
     pub node_id: String,
-    pub source_record_id: String,
+    pub source_record_id: Arc<str>,
     pub source: SourceSpan,
     pub geometry_mask: u32,
     pub specification: TextValue,
@@ -298,7 +298,7 @@ struct Frame {
 
 impl Builder<'_> {
     pub(super) fn texture_use(&mut self, r: &Record, n: usize) -> Result<(), HsfError> {
-        let layout = r.rendering.as_ref().expect("framed color");
+        let layout = r.rendering().expect("framed color");
         let Some(field) = layout
             .fields
             .iter()

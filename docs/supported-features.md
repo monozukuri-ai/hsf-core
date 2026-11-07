@@ -45,7 +45,7 @@ Pause preserves segment/tag state and does not substitute for termination.
 
 | Feature | Supported result | Boundary |
 | --- | --- | --- |
-| Shell | Uncompressed f32 points, or trivially quantized points (2–31 bits within a stored box); CS_TRIVIAL 8/16/32-bit face values, including signed strips/fans | Other point compression, connectivity compression, collections and bounding-only Shells are unsupported |
+| Shell | Uncompressed f32 points, or trivially quantized points (2–31 bits within a stored box); CS_TRIVIAL 8/16/32-bit face values, including signed strips/fans; connectivity compression (scheme 5, stream layout 2: C/L/E/R/S opcodes, dummy vertices, quantized points and normals within a stored box) | Other point compression, merge opcodes (M, M2), patched vertices, toolkit-supplied boxes, collections and bounding-only Shells are unsupported |
 | Shell triangulation | Triangles, convex planar quads, strips and fans, with source-face indices | Holes, larger polygons and non-convex/non-planar/degenerate quads retain arrays but withhold all triangles for that mesh |
 | Rectangular Mesh | Uncompressed row-major points, flags 0/8, rows and columns at least 2; two triangles per cell | Other storage profiles and unknown attributes stop framing |
 | Null Shell | Placeholder identity plus a unique uncompressed LOD 0 refinement of an already tagged LOD 0 Null Shell | Duplicate updates revoke the binding; other targets and general LOD selection remain unsupported |

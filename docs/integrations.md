@@ -60,7 +60,7 @@ The backend independently validates the returned declared word, stop marker and
 field ranges. Metadata is limited to 64 fields, 64-byte labels and a 128-byte
 profile identifier; 16384 output bytes are charged before the callback. Field
 offsets remain absolute within their domain. Successful framing retains
-`Record.user_data`, emits `hsf.experimental_user_data` and leaves the result
+`Record::user_data()`, emits `hsf.experimental_user_data` and leaves the result
 partial even if no bytes remain unparsed. Strict mode rejects every empirical
 profile. Unknown profiles must not trigger marker searches.
 

@@ -101,7 +101,7 @@ fn simple_reflection_operands_follow_its_flags() {
         ParseMode::Strict,
     )
     .unwrap();
-    let fields = &p.data.records[0].rendering.as_ref().unwrap().fields;
+    let fields = &p.data.records[0].rendering().unwrap().fields;
     assert_eq!(fields.last().unwrap().name, "simple_reflection_options");
     assert_eq!(p.data.records[1].kind, "line");
     // Plane, opacity, blur and attenuation: 0x4c with the extension byte, then 0x100.
@@ -110,12 +110,11 @@ fn simple_reflection_operands_follow_its_flags() {
     let p = parsed(&[b.clone(), vec![0]].concat(), "19.10", ParseMode::Strict).unwrap();
     assert_eq!(p.data.records[0].source.length, b.len() as u64);
     let names: Vec<_> = p.data.records[0]
-        .rendering
-        .as_ref()
+        .rendering()
         .unwrap()
         .fields
         .iter()
-        .map(|f| f.name.as_str())
+        .map(|f| &*f.name)
         .collect();
     assert!(names.ends_with(&[
         "simple_reflection_options",
@@ -148,7 +147,7 @@ fn quantized_points_decode_across_their_box() {
         ParseMode::Strict,
     )
     .unwrap();
-    let shell = p.data.records[0].shell.as_ref().unwrap();
+    let shell = p.data.records[0].shell().unwrap();
     assert_eq!(shell.vertex_count, 3);
     let q = shell.point_quantization.as_ref().unwrap();
     assert_eq!((q.scheme, q.bits_per_sample), (1, 16));

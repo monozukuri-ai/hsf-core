@@ -43,7 +43,7 @@ fn shared_coordinates_and_component_reference_identity() {
         ParseMode::Strict,
     )
     .unwrap();
-    let l = p.data.records[0].poly_polyline.as_ref().unwrap();
+    let l = p.data.records[0].poly_polyline().unwrap();
     assert_eq!((l.dimensions, l.primitive_count, l.point_count), (1, 2, 5));
     assert_eq!(l.leftovers.length, 12);
     assert_eq!(l.leftovers.offset, l.points.offset + l.points.length);
@@ -74,7 +74,7 @@ fn shared_coordinates_and_component_reference_identity() {
 #[test]
 fn text_region_is_raw_metadata_with_unevaluated_scene_effects() {
     let p = parse_body(&[region(), batch(), vec![0]].concat(), ParseMode::Strict).unwrap();
-    let l = p.data.records[0].primitive.as_ref().unwrap();
+    let l = p.data.records[0].primitive().unwrap();
     let r = l.text_region.as_ref().unwrap();
     assert_eq!((l.point_count, r.point_count, r.options), (1, 2, 31));
     assert_eq!(p.data.source_bytes(&r.points), Some(&region()[20..]));

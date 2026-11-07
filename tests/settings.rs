@@ -69,7 +69,7 @@ fn observed_clip_option_framing_keeps_effects_opaque() {
     record[1] = 5;
     let body = [record.clone(), vec![b'l'], vec![0; 24], vec![0]].concat();
     let p = parse_body(&body, "19.10", ParseMode::Strict).unwrap();
-    let layout = p.data.records[0].clip_region.as_ref().unwrap();
+    let layout = p.data.records[0].clip_region().unwrap();
     assert_eq!(layout.options, 5);
     assert_eq!(layout.point_count, 3);
     assert_eq!(p.data.records[1].source.offset, 15 + 42);
@@ -134,14 +134,7 @@ fn size_units_inherit_across_reopen_and_reference() {
             ParseMode::Strict,
         )
         .unwrap();
-        assert!(
-            p.data.records[0]
-                .edge_weight
-                .as_ref()
-                .unwrap()
-                .units
-                .is_none()
-        );
+        assert!(p.data.records[0].edge_weight().unwrap().units.is_none());
         assert_eq!(p.data.records[0].source.length, 5);
     }
 }
@@ -158,14 +151,14 @@ fn names_patterns_alignment_clip_and_metadata_keep_exact_spans() {
     let r = &p.data.records;
     assert_eq!(
         p.data
-            .source_bytes(r[0].named_style.as_ref().unwrap().name.as_ref().unwrap())
+            .source_bytes(r[0].named_style().unwrap().name.as_ref().unwrap())
             .unwrap(),
         b"a\0b"
     );
-    assert_eq!(r[2].named_style.as_ref().unwrap().index, Some(0x1234));
+    assert_eq!(r[2].named_style().unwrap().index, Some(0x1234));
     assert_eq!(r[3].value, Some(0x3f));
-    assert_eq!(r[4].clip_region.as_ref().unwrap().points.length, 36);
-    let l = r[5].user_index.as_ref().unwrap();
+    assert_eq!(r[4].clip_region().unwrap().points.length, 36);
+    let l = r[5].user_index().unwrap();
     assert_eq!(
         p.data.source_bytes(&l.indices).unwrap(),
         [-2i32, 7]
@@ -209,10 +202,7 @@ fn names_patterns_alignment_clip_and_metadata_keep_exact_spans() {
     );
     // Old numeric patterns consume two bytes even when their low byte is FF.
     let p = parse_body(b"-\xff\x01@\x06*\x10\0", "8.05", ParseMode::Strict).unwrap();
-    assert_eq!(
-        p.data.records[0].named_style.as_ref().unwrap().index,
-        Some(511)
-    );
+    assert_eq!(p.data.records[0].named_style().unwrap().index, Some(511));
 }
 #[test]
 fn render_masks_channel_order_versions_and_disabled_values() {
@@ -220,7 +210,7 @@ fn render_masks_channel_order_versions_and_disabled_values() {
         let b = color_locks(version);
         let p = parse_body(&[b.clone(), vec![0]].concat(), version, ParseMode::Strict).unwrap();
         assert_eq!(p.data.records[0].source.length, b.len() as u64);
-        let a = p.data.records[0].rendering.as_ref().unwrap();
+        let a = p.data.records[0].rendering().unwrap();
         assert_eq!(
             a.fields.len(),
             if version == "8.05" {
@@ -251,12 +241,9 @@ fn render_masks_channel_order_versions_and_disabled_values() {
             .collect::<Vec<_>>(),
     );
     let p = parse_body(&[b, vec![0]].concat(), "8.05", ParseMode::Strict).unwrap();
+    assert_eq!(p.data.records[0].rendering().unwrap().mask, 0x1080000000);
     assert_eq!(
-        p.data.records[0].rendering.as_ref().unwrap().mask,
-        0x1080000000
-    );
-    assert_eq!(
-        p.data.records[0].rendering.as_ref().unwrap().fields[0].name,
+        p.data.records[0].rendering().unwrap().fields[0].name,
         "depth_range"
     );
     // Color channel selectors use value independently of color mask.
@@ -268,7 +255,7 @@ fn render_masks_channel_order_versions_and_disabled_values() {
     let b = render(0x100000, 0, 0x100000, 0, &payload);
     let p = parse_body(&[b, vec![0]].concat(), "19.10", ParseMode::Strict).unwrap();
     assert_eq!(
-        p.data.records[0].rendering.as_ref().unwrap().fields[4].name,
+        p.data.records[0].rendering().unwrap().fields[4].name,
         "face_lock_mask"
     );
     // Buffer size is bit 0; retention/color-depth bits add no operands.
@@ -315,14 +302,10 @@ fn render_fixed_fields_and_legacy_cut_edge_have_exact_order() {
         ParseMode::Strict,
     )
     .unwrap();
-    let layout = p.data.records[0].rendering.as_ref().unwrap();
+    let layout = p.data.records[0].rendering().unwrap();
     assert_eq!(p.data.records[0].source.length, body.len() as u64);
     assert_eq!(
-        layout
-            .fields
-            .iter()
-            .map(|f| f.name.as_str())
-            .collect::<Vec<_>>(),
+        layout.fields.iter().map(|f| &*f.name).collect::<Vec<_>>(),
         [
             "hsr",
             "technology_quantization",
@@ -366,10 +349,7 @@ fn render_fixed_fields_and_legacy_cut_edge_have_exact_order() {
             ParseMode::Strict,
         )
         .unwrap();
-        assert_eq!(
-            p.data.records[0].rendering.as_ref().unwrap().fields.len(),
-            fields
-        );
+        assert_eq!(p.data.records[0].rendering().unwrap().fields.len(), fields);
     }
     // These selectors, observed at 18.00, 19.10 and 20.90, have no channel
     // operand in the SDK grammar.

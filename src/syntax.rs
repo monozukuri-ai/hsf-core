@@ -3,6 +3,7 @@
 use crate::*;
 use flate2::{Decompress, FlushDecompress, Status as ZStatus};
 use sha2::{Digest, Sha256};
+use std::borrow::Cow;
 use std::sync::Arc;
 mod continuation;
 mod image;
@@ -72,7 +73,7 @@ impl Default for ParseOptions {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct SourceDomain {
-    pub id: String,
+    pub id: Arc<str>,
     pub byte_len: u64,
     pub sha256: String,
     pub parent: Option<SourceSpan>,
@@ -91,40 +92,92 @@ impl SourceDomain {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Record {
-    pub id: String,
+    /// Shared with the scene objects that cite this record.
+    pub id: Arc<str>,
     pub opcode: u8,
-    pub kind: String,
+    pub kind: Cow<'static, str>,
     pub source: SourceSpan,
-    /// Syntactic scope only. Reopened segment identities are not resolved.
-    pub scope: Option<String>,
+    /// Syntactic scope only (the enclosing open-segment record's id). Reopened
+    /// segment identities are not resolved.
+    pub scope: Option<Arc<str>>,
     /// Operand bytes without length prefixes. Text encodings remain unspecified.
     pub payload: Option<SourceSpan>,
     pub condition: Option<SourceSpan>,
     /// File flags, reference index, bounds type, user value, or implicit tag index.
     pub value: Option<u32>,
-    pub shell: Option<Box<ShellLayout>>,
-    pub poly_polyline: Option<Box<PolyPolylineLayout>>,
-    pub primitive: Option<Box<PrimitiveLayout>>,
-    pub user_data: Option<Box<UserDataLayout>>,
-    pub view: Option<Box<ViewLayout>>,
-    pub visibility: Option<Box<VisibilityLayout>>,
-    pub line_style: Option<Box<LineStyleLayout>>,
-    pub glyph: Option<Box<GlyphLayout>>,
-    pub font: Option<Box<FontLayout>>,
-    pub marker_size: Option<Box<MarkerSizeLayout>>,
-    pub line_weight: Option<Box<MarkerSizeLayout>>,
-    pub edge_weight: Option<Box<MarkerSizeLayout>>,
-    pub named_style: Option<Box<NamedStyleLayout>>,
-    pub clip_region: Option<Box<ClipRegionLayout>>,
-    pub user_index: Option<Box<UserIndexLayout>>,
-    pub user_index_data: Option<Box<UserIndexDataLayout>>,
-    pub rendering: Option<Box<RenderingLayout>>,
-    pub camera: Option<Box<CameraLayout>>,
-    pub texture: Option<Box<TextureLayout>>,
-    pub image: Option<Box<ImageLayout>>,
-    pub indexed_color: Option<Box<IndexedColorLayout>>,
-    pub color_map: Option<Box<ColorMapLayout>>,
-    pub mesh: Option<Box<GridMeshLayout>>,
+    /// The opcode's own framing; read it with the accessors (`shell()` and so on).
+    pub layout: Option<RecordLayout>,
+}
+
+/// Opcode-specific framing. A record carries at most one: large layouts are
+/// boxed and the few small ones inline, so a record without one stays small
+/// (a large file holds millions of records).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RecordLayout {
+    Shell(Box<ShellLayout>),
+    PolyPolyline(Box<PolyPolylineLayout>),
+    Primitive(Box<PrimitiveLayout>),
+    UserData(Box<UserDataLayout>),
+    View(Box<ViewLayout>),
+    Visibility(VisibilityLayout),
+    LineStyle(Box<LineStyleLayout>),
+    Glyph(Box<GlyphLayout>),
+    Font(Box<FontLayout>),
+    MarkerSize(MarkerSizeLayout),
+    LineWeight(MarkerSizeLayout),
+    EdgeWeight(MarkerSizeLayout),
+    NamedStyle(Box<NamedStyleLayout>),
+    ClipRegion(Box<ClipRegionLayout>),
+    UserIndex(Box<UserIndexLayout>),
+    UserIndexData(Box<UserIndexDataLayout>),
+    Rendering(Box<RenderingLayout>),
+    Camera(Box<CameraLayout>),
+    Texture(Box<TextureLayout>),
+    Image(Box<ImageLayout>),
+    IndexedColor(IndexedColorLayout),
+    ColorMap(Box<ColorMapLayout>),
+    Mesh(Box<GridMeshLayout>),
+}
+
+macro_rules! layout_accessors {
+    ($($name:ident: $variant:ident => $ty:ty;)*) => {
+        impl Record {
+            $(
+                pub fn $name(&self) -> Option<&$ty> {
+                    match &self.layout {
+                        Some(RecordLayout::$variant(l)) => Some(std::borrow::Borrow::borrow(l)),
+                        _ => None,
+                    }
+                }
+            )*
+        }
+    };
+}
+layout_accessors! {
+    shell: Shell => ShellLayout;
+    poly_polyline: PolyPolyline => PolyPolylineLayout;
+    primitive: Primitive => PrimitiveLayout;
+    user_data: UserData => UserDataLayout;
+    view: View => ViewLayout;
+    visibility: Visibility => VisibilityLayout;
+    line_style: LineStyle => LineStyleLayout;
+    glyph: Glyph => GlyphLayout;
+    font: Font => FontLayout;
+    marker_size: MarkerSize => MarkerSizeLayout;
+    line_weight: LineWeight => MarkerSizeLayout;
+    edge_weight: EdgeWeight => MarkerSizeLayout;
+    named_style: NamedStyle => NamedStyleLayout;
+    clip_region: ClipRegion => ClipRegionLayout;
+    user_index: UserIndex => UserIndexLayout;
+    user_index_data: UserIndexData => UserIndexDataLayout;
+    rendering: Rendering => RenderingLayout;
+    camera: Camera => CameraLayout;
+    texture: Texture => TextureLayout;
+    image: Image => ImageLayout;
+    indexed_color: IndexedColor => IndexedColorLayout;
+    color_map: ColorMap => ColorMapLayout;
+    mesh: Mesh => GridMeshLayout;
 }
 
 /// Raw masks include extension flags; only mask-selected geometry bits apply.
@@ -252,6 +305,78 @@ pub struct ShellLayout {
     pub faces: SourceSpan,
     pub normals: Option<SourceSpan>,
     pub attributes: Vec<ShellAttributeLayout>,
+    /// Set for connectivity-compressed Shells (flag 0x40), whose stream holds the
+    /// points and triangles; `vertices` and `faces` are then empty.
+    pub connectivity: Option<ConnectivityLayout>,
+}
+
+/// A connectivity-compressed Shell's stream. Its header gives the point count;
+/// the scene decodes the stream (see the supported profile there).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConnectivityLayout {
+    /// Shell compression scheme; only 5 (edgebreaker) is framed.
+    pub scheme: u8,
+    /// Header, opcodes, auxiliary table, then quantized points and normals.
+    pub stream: SourceSpan,
+    /// Stream layout; only 2 is framed.
+    pub stream_scheme: u8,
+    pub points_scheme: u8,
+    pub normals_scheme: u8,
+    /// One triangle per opcode, before hole-plug triangles are removed.
+    pub opcode_count: u32,
+}
+
+/// Byte ranges of a connectivity stream's sections, from its 24-byte header
+/// (layout 2): the opcodes follow the header, and the auxiliary table and the
+/// points each start at the next four-byte boundary.
+pub(crate) struct ConnectivitySections {
+    pub ops: std::ops::Range<usize>,
+    pub table: std::ops::Range<usize>,
+    pub points: std::ops::Range<usize>,
+    pub points_count: usize,
+}
+
+pub(crate) fn connectivity_sections(stream: &[u8]) -> Result<ConnectivitySections, HsfError> {
+    let invalid = |message| error("hsf.invalid_shell_connectivity", Status::Invalid, message);
+    if stream.len() < 24 {
+        return Err(invalid("Connectivity stream is shorter than its header"));
+    }
+    if stream[0] != 2 || stream[1] != 0 {
+        return Err(error(
+            "hsf.shell_connectivity_scheme",
+            Status::Unsupported,
+            "Only connectivity stream layout 2 with table layout 0 is supported",
+        ));
+    }
+    if stream[2] == 0 {
+        return Err(error(
+            "hsf.shell_connectivity_points",
+            Status::Unsupported,
+            "Connectivity streams without quantized points are not implemented",
+        ));
+    }
+    let word = |at: usize| {
+        usize::try_from(i32::from_le_bytes(
+            stream[at..at + 4].try_into().expect("four bytes"),
+        ))
+        .map_err(|_| invalid("Negative connectivity section length"))
+    };
+    let (ops, table, points, points_count) = (word(4)?, word(8)?, word(12)?, word(16)?);
+    let align = |n: usize| n.checked_add(3).map(|n| n & !3);
+    let ops = 24..24 + ops;
+    let table_start = align(ops.end).ok_or_else(|| invalid("Connectivity sections overflow"))?;
+    let table = table_start..table_start.saturating_add(table);
+    let points_start = align(table.end).ok_or_else(|| invalid("Connectivity sections overflow"))?;
+    let points = points_start..points_start.saturating_add(points);
+    if points.end > stream.len() || ops.end > stream.len() {
+        return Err(invalid("Connectivity sections extend beyond the stream"));
+    }
+    Ok(ConnectivitySections {
+        ops,
+        table,
+        points,
+        points_count,
+    })
 }
 
 /// Quantized Shell points: each coordinate is a `bits_per_sample` code spanning
@@ -381,10 +506,26 @@ pub fn parse_precharged_with_user_data(
 
 fn span(domain: usize, start: usize, length: usize) -> SourceSpan {
     SourceSpan {
-        domain_id: format!("hsf:{domain}"),
+        domain_id: domain_name(domain),
         offset: start as u64,
         length: length as u64,
     }
+}
+
+/// `hsf:{domain}`, allocated once per domain index and thread: a large file
+/// holds millions of spans, and each used to own its copy of the name.
+fn domain_name(domain: usize) -> Arc<str> {
+    thread_local! {
+        static NAMES: std::cell::RefCell<Vec<Arc<str>>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+    NAMES.with(|names| {
+        let mut names = names.borrow_mut();
+        while names.len() <= domain {
+            let next = names.len();
+            names.push(Arc::from(format!("hsf:{next}")));
+        }
+        names[domain].clone()
+    })
 }
 
 struct Parser<'a> {
@@ -392,7 +533,7 @@ struct Parser<'a> {
     options: &'a ParseOptions,
     budget: &'a mut Budget,
     diagnostics: Vec<Diagnostic>,
-    stack: Vec<String>,
+    stack: Vec<Arc<str>>,
     tag: u32,
     vertices: u64,
     image_pixels: u64,
@@ -459,7 +600,7 @@ impl Parser<'_> {
         }
         self.budget.charge_output(512).map_err(context)?;
         self.document.domains.push(SourceDomain {
-            id: format!("hsf:{id}"),
+            id: domain_name(id),
             byte_len: bytes.len() as u64,
             sha256: format!("{:x}", Sha256::digest(&bytes)),
             encoding: if parent.is_some() { "zlib" } else { "identity" }.into(),
@@ -551,37 +692,15 @@ impl Parser<'_> {
             }
             c.pos += 1;
             let mut record = Record {
-                id: format!("record:{}", self.document.records.len()),
+                id: Arc::from(format!("record:{}", self.document.records.len())),
                 opcode: op,
-                kind: String::new(),
+                kind: Cow::Borrowed(""),
                 source: span(d, at, 0),
                 scope: self.stack.last().cloned(),
                 payload: None,
                 condition: None,
                 value: None,
-                shell: None,
-                poly_polyline: None,
-                primitive: None,
-                user_data: None,
-                view: None,
-                visibility: None,
-                line_style: None,
-                glyph: None,
-                font: None,
-                marker_size: None,
-                line_weight: None,
-                edge_weight: None,
-                named_style: None,
-                clip_region: None,
-                user_index: None,
-                user_index_data: None,
-                rendering: None,
-                camera: None,
-                texture: None,
-                image: None,
-                indexed_color: None,
-                color_map: None,
-                mesh: None,
+                layout: None,
             };
             // Cursor routines do no allocation; limits apply before retaining records.
             let decoded = self.operand(op, d, &mut c, &mut record, compressed);
@@ -705,9 +824,9 @@ impl Parser<'_> {
     ) -> Result<(), HsfError> {
         r.kind = match op {
             1 => "pause",
-            b'i' => { r.image = Some(Box::new(self.image(d,c)?)); "experimental_image" }
-            b't' => { r.texture = Some(Box::new(self.texture(d,c)?)); "texture" }
-            b'M' => { r.mesh = Some(Box::new(self.grid_mesh(d,c)?)); "mesh" }
+            b'i' => { r.layout = Some(RecordLayout::Image(Box::new(self.image(d,c)?))); "experimental_image" }
+            b't' => { r.layout = Some(RecordLayout::Texture(Box::new(self.texture(d,c)?))); "texture" }
+            b'M' => { r.layout = Some(RecordLayout::Mesh(Box::new(self.grid_mesh(d,c)?))); "mesh" }
             b'?' => {
                 let v = &self.document.header.version;
                 if (v.major,v.minor) < (11,50) { return Err(error("hsf.conditions_version",Status::Unsupported,"Conditions requires HSF 11.50")); }
@@ -718,7 +837,7 @@ impl Parser<'_> {
             8 | 9 => {
                 let geometry_mask = self.color_mask(c)?;
                 let index = if op == 8 { u16::from(c.u8()?) } else { c.u16()? };
-                r.indexed_color = Some(Box::new(IndexedColorLayout { geometry_mask, index }));
+                r.layout = Some(RecordLayout::IndexedColor(IndexedColorLayout { geometry_mask, index }));
                 "color_by_index"
             }
             0x0c => {
@@ -733,7 +852,7 @@ impl Parser<'_> {
                         "Color map exceeds 65536 entries"));
                 }
                 let colors = self.payload(d, c, u64::from(entry_count) * 3)?;
-                r.color_map = Some(Box::new(ColorMapLayout { format, entry_count, colors }));
+                r.layout = Some(RecordLayout::ColorMap(Box::new(ColorMapLayout { format, entry_count, colors })));
                 "color_map"
             }
             b'h' => {
@@ -764,16 +883,16 @@ impl Parser<'_> {
                     let n = c.u8()?;
                     let name = self.payload(d, c, u64::from(n))?;
                     r.payload = Some(name.clone());
-                    r.view = Some(Box::new(ViewLayout { projection, camera, name }));
+                    r.layout = Some(RecordLayout::View(Box::new(ViewLayout { projection, camera, name })));
                     "view"
                 } else {
-                    r.camera = Some(Box::new(CameraLayout { projection, settings: camera }));
+                    r.layout = Some(RecordLayout::Camera(Box::new(CameraLayout { projection, settings: camera })));
                     "camera"
                 }
             }
             0x10 => {
                 self.precision_byte(c, "hsf.unsupported_primitive_precision")?;
-                r.poly_polyline = Some(Box::new(self.poly_polyline(d,c)?));
+                r.layout = Some(RecordLayout::PolyPolyline(Box::new(self.poly_polyline(d,c)?)));
                 "poly_polyline"
             }
             b'$' => {
@@ -784,7 +903,7 @@ impl Parser<'_> {
             }
             b'X' | b'l' | b'L' | b'G' | b'C' | b'c' | b'T' | b'x' => {
                 self.precision_byte(c, "hsf.unsupported_primitive_precision")?;
-                r.primitive = Some(Box::new(self.primitive(op, d, c)?));
+                r.layout = Some(RecordLayout::Primitive(Box::new(self.primitive(op, d, c)?)));
                 match op {
                     b'X' => "marker",
                     b'l' => "line",
@@ -798,7 +917,7 @@ impl Parser<'_> {
             }
             b'S' => {
                 self.precision_byte(c, "hsf.unsupported_shell_precision")?;
-                r.shell = Some(Box::new(self.shell(d, c)?));
+                r.layout = Some(RecordLayout::Shell(Box::new(self.shell(d, c)?)));
                 "shell"
             }
             b'%' | b'&' => {
@@ -837,19 +956,19 @@ impl Parser<'_> {
                 "color_rgb"
             }
             b'H' | b'F' | b'"' => {
-                r.rendering = Some(Box::new(self.rendering(op, d, c)?));
+                r.layout = Some(RecordLayout::Rendering(Box::new(self.rendering(op, d, c)?)));
                 match op { b'H' => "heuristics", b'F' => "text_font", _ => "color" }
             }
-            b'R' => { r.rendering = Some(Box::new(self.render_options(d, c)?)); "rendering_options" }
+            b'R' => { r.layout = Some(RecordLayout::Rendering(Box::new(self.render_options(d, c)?))); "rendering_options" }
             b'@' | b'-' | 0x0d => {
-                r.named_style = Some(Box::new(self.named_style(op, d, c)?));
+                r.layout = Some(RecordLayout::NamedStyle(Box::new(self.named_style(op, d, c)?)));
                 match op { b'@' => "marker_symbol", b'-' => "line_pattern", _ => "edge_pattern" }
             }
             b'*' => { r.value = Some(u32::from(c.u8()?)); "text_alignment" }
-            b'O' => { r.clip_region = Some(Box::new(self.clip_region(d, c)?)); "clip_region" }
-            b'n' => { r.user_index = Some(Box::new(self.user_index(d, c)?)); "user_index" }
+            b'O' => { r.layout = Some(RecordLayout::ClipRegion(Box::new(self.clip_region(d, c)?))); "clip_region" }
+            b'n' => { r.layout = Some(RecordLayout::UserIndex(Box::new(self.user_index(d, c)?))); "user_index" }
             b'm' => {
-                r.user_index_data = Some(Box::new(self.user_index_data(d, c)?));
+                r.layout = Some(RecordLayout::UserIndexData(Box::new(self.user_index_data(d, c)?)));
                 "user_index_data"
             }
             b'V' => {
@@ -888,7 +1007,7 @@ impl Parser<'_> {
                 // interleaved with mask bytes and exposed by the typed layout.
                 r.payload = Some(span(d, value_at, 1));
                 r.value = Some(mask);
-                r.visibility = Some(Box::new(VisibilityLayout { mask, value }));
+                r.layout = Some(RecordLayout::Visibility(VisibilityLayout { mask, value }));
                 "visibility"
             }
             b'J' => {
@@ -901,7 +1020,7 @@ impl Parser<'_> {
                 let name = self.payload(d, c, length)?;
                 let length = u64::from(c.u16()?);
                 let definition = self.payload(d, c, length)?;
-                r.line_style = Some(Box::new(LineStyleLayout { name, definition }));
+                r.layout = Some(RecordLayout::LineStyle(Box::new(LineStyleLayout { name, definition })));
                 "line_style"
             }
             b'j' => {
@@ -914,7 +1033,7 @@ impl Parser<'_> {
                 let name = self.payload(d, c, length)?;
                 let length = u64::from(c.u16()?);
                 let definition = self.payload(d, c, length)?;
-                r.glyph = Some(Box::new(GlyphLayout { name, definition }));
+                r.layout = Some(RecordLayout::Glyph(Box::new(GlyphLayout { name, definition })));
                 "glyph"
             }
             b'f' => {
@@ -931,7 +1050,7 @@ impl Parser<'_> {
                 // SDK binary reader uses signed int, despite the HTML Byte table.
                 let length = u64::from(c.nonnegative()?);
                 let data = self.payload(d, c, length)?;
-                r.font = Some(Box::new(FontLayout { format, name, encoding, lookup, data }));
+                r.layout = Some(RecordLayout::Font(Box::new(FontLayout { format, name, encoding, lookup, data })));
                 "font"
             }
             b'+' | b'=' | 0x0e => {
@@ -947,9 +1066,9 @@ impl Parser<'_> {
                         "Unknown size units"));
                 }
                 let layout = Some(MarkerSizeLayout { value_bits, units });
-                if op == b'+' { r.marker_size = layout.map(Box::new); "marker_size" }
-                else if op == b'=' { r.line_weight = layout.map(Box::new); "line_weight" }
-                else { r.edge_weight = layout.map(Box::new); "edge_weight" }
+                if op == b'+' { r.layout = layout.map(RecordLayout::MarkerSize); "marker_size" }
+                else if op == b'=' { r.layout = layout.map(RecordLayout::LineWeight); "line_weight" }
+                else { r.layout = layout.map(RecordLayout::EdgeWeight); "edge_weight" }
             }
             0 if !compressed => "termination",
             b'z' if compressed => "stop_compression",
@@ -1156,7 +1275,7 @@ impl Parser<'_> {
                         self.diagnostics.push(diagnostic);
                         c.pos = at + end.expect("validated end") + 1;
                         r.payload = Some(span(d, at + 5, layout.computed_payload_length as usize));
-                        r.user_data = Some(Box::new(layout));
+                        r.layout = Some(RecordLayout::UserData(Box::new(layout)));
                         r.kind = "experimental_user_data".into();
                         return Ok(());
                     }
@@ -1325,16 +1444,10 @@ impl Parser<'_> {
                 faces: empty,
                 normals: None,
                 attributes: vec![],
+                connectivity: None,
             });
         }
 
-        if flags & 64 != 0 {
-            return Err(error(
-                "hsf.shell_connectivity_compression",
-                Status::Unsupported,
-                "Compressed Shell connectivity is not implemented",
-            ));
-        }
         if flags & 32 != 0 || extended_flags & !4 != 0 {
             return Err(error(
                 "hsf.shell_flags",
@@ -1348,6 +1461,9 @@ impl Parser<'_> {
             None
         };
         let lod = c.u8()?;
+        if flags & 64 != 0 {
+            return self.connected_shell(d, c, flags, extended_flags, refinement_index, lod);
+        }
         let (vertex_count, vertices, point_quantization) = if flags & 1 != 0 {
             self.quantized_points(d, c)?
         } else {
@@ -1423,6 +1539,94 @@ impl Parser<'_> {
             faces,
             normals,
             attributes,
+            connectivity: None,
+        })
+    }
+    /// Connectivity-compressed Shell (flag 0x40), as the reference reader frames
+    /// it after the LOD: the compression scheme (5, edgebreaker), the stream's
+    /// byte length and the stream, then the optional attributes. Observed only
+    /// with quantized points (flag 1) in the stream.
+    fn connected_shell(
+        &mut self,
+        d: usize,
+        c: &mut Cursor<'_>,
+        flags: u8,
+        extended_flags: u16,
+        refinement_index: Option<u32>,
+        lod: u8,
+    ) -> Result<ShellLayout, HsfError> {
+        if c.u8()? != 5 {
+            return Err(error(
+                "hsf.shell_connectivity_scheme",
+                Status::Unsupported,
+                "Only edgebreaker (scheme 5) connectivity compression is supported",
+            ));
+        }
+        if flags & 1 == 0 {
+            return Err(error(
+                "hsf.shell_connectivity_points",
+                Status::Unsupported,
+                "Connectivity-compressed Shells without compressed points are not implemented",
+            ));
+        }
+        let length = c.nonnegative()?;
+        let at = c.pos;
+        let stream = c.array(d, length, 1)?;
+        let bytes = &c.data[at..c.pos];
+        let sections = connectivity_sections(bytes)?;
+        let vertex_count = u32::try_from(sections.points_count).map_err(|_| {
+            error(
+                "hsf.invalid_shell_connectivity",
+                Status::Invalid,
+                "Connectivity point count exceeds the index range",
+            )
+        })?;
+        let opcode_count = sections.ops.len() as u32;
+        charge(
+            &mut self.vertices,
+            u64::from(vertex_count),
+            self.options.max_vertices,
+            "hsf.limit_vertices",
+        )?;
+        charge(
+            &mut self.face_values,
+            u64::from(opcode_count) * 4,
+            self.options.max_face_values,
+            "hsf.limit_face_values",
+        )?;
+        let layout = ConnectivityLayout {
+            scheme: 5,
+            stream,
+            stream_scheme: bytes[0],
+            points_scheme: bytes[2],
+            normals_scheme: bytes[3],
+            opcode_count,
+        };
+        let attributes = if flags & 8 != 0 {
+            self.shell_attributes(d, c, vertex_count)?
+        } else {
+            vec![]
+        };
+        let normals = attributes
+            .iter()
+            .find(|a| a.opcode == 17)
+            .map(|a| a.fields[0].source.clone());
+        let empty = span(d, at, 0);
+        Ok(ShellLayout {
+            null: false,
+            flags,
+            extended_flags,
+            refinement_index,
+            lod,
+            vertex_count,
+            vertices: empty.clone(),
+            point_quantization: None,
+            face_value_count: 0,
+            face_bits: 0,
+            faces: empty,
+            normals,
+            attributes,
+            connectivity: Some(layout),
         })
     }
     /// Quantized Shell points (flag 1), in the reference reader's order: the

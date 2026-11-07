@@ -4,7 +4,7 @@ use super::*;
 #[derive(Clone, Debug, Serialize)]
 pub struct LineStyleProgram {
     /// solid, explicit_dash_blank, parallel_dash_blank, or extended_line_style.
-    pub kind: String,
+    pub kind: Cow<'static, str>,
     /// Contract 26 simple form. Empty for parallel_dash_blank.
     pub elements: Vec<LineStyleElement>,
     pub parallels: Vec<LineStyleParallel>,
@@ -15,7 +15,7 @@ pub struct LineStyleProgram {
 }
 #[derive(Clone, Debug, Serialize)]
 pub struct LineStyleElement {
-    pub kind: String,
+    pub kind: Cow<'static, str>,
     /// None means an explicitly unsized, stretchable dash/blank.
     pub length: Option<f64>,
     pub units: Option<String>,
@@ -235,7 +235,7 @@ pub(super) fn decode_program(
             }
             [kind @ ("dash" | "blank" | "contrast")] => {
                 parallel.elements.push(LineStyleElement {
-                    kind: (*kind).into(),
+                    kind: Cow::Owned((*kind).to_owned()),
                     length: None,
                     units: None,
                     stretchable: true,
@@ -252,7 +252,7 @@ pub(super) fn decode_program(
                     return Ok(None);
                 }
                 parallel.elements.push(LineStyleElement {
-                    kind: (*kind).into(),
+                    kind: Cow::Owned((*kind).to_owned()),
                     length: Some(length),
                     units: Some(units.into()),
                     stretchable: false,
@@ -453,6 +453,7 @@ impl Builder<'_> {
                     &mut display.edge_pattern
                 };
                 if let Some(attr) = attr.as_mut().filter(|a| a.source == event_source) {
+                    let attr = Arc::make_mut(attr);
                     attr.value.pattern = reason.is_none().then(|| "custom".into());
                     attr.value.interpretation_status = binding.status.clone();
                     attr.value.binding = Some(binding);
