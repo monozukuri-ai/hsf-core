@@ -1,6 +1,6 @@
 # Supported features and limitations
 
-Syntax profiles are selected for HSF **8.05, 14.50, 17.85, 18.00, 19.10, 20.90 and 21.15**. Availability within
+Syntax profiles are selected for HSF **8.05, 14.50, 17.85, 18.00, 19.00, 19.10, 20.90, 21.00 and 21.15**. Availability within
 a profile depends on record flags and operands. Unknown framing stops at the
 original opcode without searching for later markers. Use `capabilities()` for
 the current numeric opcode list and [Getting started](getting-started.md) for
@@ -14,7 +14,9 @@ tags, user options/values/indices, user index data, segment priority, Pause and
 start/stop compression. Some records are framed even when their scene semantics
 remain unsupported; Priority (`0`, one i32) is framed and retained but ignored by
 the scene, since it orders drawing only. Selectability (`!`, six masks) is
-framed and ignored likewise, since it governs picking only. User Index Data
+framed and ignored likewise, since it governs picking only. Face Pattern (`P`,
+one enumerated byte) is framed and treated as an unevaluated rendering setting.
+User Index Data
 (`m`, HSF 17.80+ toolkits) is framed as a count followed by interleaved (index,
 size, bytes) entries and listed per segment with opaque bytes; producers assign
 the index meanings (eDrawings 2026 keeps display names under the index spelled
@@ -25,16 +27,20 @@ bit 31 of the first is set, the third when bit 31 of the second
 (`TKO_Rendo_Extended2`) is set, as written by 3DF 20.10 toolkits behind 19.10
 headers. Options whose operand position is unverified stop the parse with
 `hsf.rendering_options_mask`; switches without operands are accepted. Simple
-reflection is framed with the operands its options select.
+reflection is framed with the operands its options select, and the
+transparency field (selected by the transparency style or options bits of the
+second word) with its depth peeling layers and minimum area; its peeling
+algorithm and unknown bits stop.
 
 HSF 20.90 (SOLIDWORKS 2025 and 2026 eDrawings) puts one byte right after the
-opcode of bounds, cameras, views, modelling matrices, Shells, simple primitives,
-poly-polylines and images, before their single-precision operands. Only zero is
-accepted; any other value stops rather than guessing a double-precision layout.
-Include and style references start with a zero byte there and carry no
-condition. Otherwise the records are framed as in 19.10. HSF 21.15 (the Creo 11
-eDrawings publisher) is framed as 20.90; 17.85 and 18.00 (SOLIDWORKS 2011 and
-2012) follow the version-gated rules between 14.50 and 19.10.
+opcode of bounds, cameras, views, modelling matrices, Shells, clip regions,
+simple primitives, poly-polylines and images, before their single-precision
+operands. Only zero is accepted; any other value stops rather than guessing a
+double-precision layout. Include and style references start with a zero byte
+there and carry no condition. Otherwise the records are framed as in 19.10.
+HSF 21.00 and 21.15 (the Creo 10 and Creo 11 eDrawings publishers) are framed
+as 20.90; 17.85 and 18.00 (SOLIDWORKS 2011 and 2012) and 19.00 (the CATIA V5
+eDrawings publisher) follow the version-gated rules between 14.50 and 19.10.
 
 Multiple alternating compressed/uncompressed blocks are supported. Internal
 compression uses zlib; nested compression is unsupported. Stop Compression must
@@ -47,16 +53,17 @@ Pause preserves segment/tag state and does not substitute for termination.
 | --- | --- | --- |
 | Shell | Uncompressed f32 points, or trivially quantized points (2–31 bits within a stored box); CS_TRIVIAL 8/16/32-bit face values, including signed strips/fans; connectivity compression (scheme 5, stream layout 2: C/L/E/R/S opcodes, dummy vertices, quantized points and normals within a stored box) | Other point compression, merge opcodes (M, M2), patched vertices, toolkit-supplied boxes, collections and bounding-only Shells are unsupported |
 | Shell triangulation | Triangles, convex planar quads, strips and fans, with source-face indices | Holes, larger polygons and non-convex/non-planar/degenerate quads retain arrays but withhold all triangles for that mesh |
-| Rectangular Mesh | Uncompressed row-major points, flags 0/8, rows and columns at least 2; two triangles per cell | Other storage profiles and unknown attributes stop framing |
+| Rectangular Mesh | Uncompressed or trivially quantized row-major points (flags 0/1/8), rows and columns at least 2; two triangles per cell | Other storage profiles and unknown attributes stop framing |
 | Null Shell | Placeholder identity plus a unique uncompressed LOD 0 refinement of an already tagged LOD 0 Null Shell | Duplicate updates revoke the binding; other targets and general LOD selection remain unsupported |
 | Lines and markers | Line, Polyline and Marker local coordinates | Compressed polyline profiles are unsupported |
-| PolyPolyline | Uncompressed batches, component lengths and unrestricted/zero/shared/per-component axes | At least one unrestricted axis is required; compression and single-component omission are unsupported |
+| PolyPolyline | Batches with component lengths and unrestricted/zero/shared/per-component axes; trivially quantized points (2–31 bits within a stored box) with the shared or per-component values of one axis in their own quantized block | Quantized batches need an unrestricted axis; quantized values of several axes, three 8-bit axes, global quantization and single-component omission are unsupported |
 | Polygon | Ordered vertices with implicit closure, at least three finite points | No appended closing vertex, triangulation or planarity/simple-boundary claim |
 | Circle and arc | Three stored control points and an optional explicit center | No fitting, tessellation or projection; explicit flags/centers require 12.15+ |
+| Ellipse and elliptical arc | The center and one point on each axis; arcs add their parametric start and end (`limits`) | No fitting, tessellation or projection; unverified at 20.90 and later |
 | Text | Local anchor, raw bytes and supported decoded text | Text options require 10.02+; no font selection or glyph layout |
 
-Text supports plain ASCII and explicit ISO-8859-1 (code 0), UTF-16LE (5),
-UTF-32LE (6) and UTF-8 (10). Unknown encodings retain bytes with unsupported text
+Text supports plain ASCII and explicit ISO-8859-1 (code 0), UTF-16LE (5 and
+8), UTF-32LE (6) and UTF-8 (10). Unknown encodings retain bytes with unsupported text
 status; malformed Unicode errors without replacement. Text is not normalized and
 BOM/NUL values are not stripped. Raw User Options without a verified encoding
 have a separate text status and do not alone make generic geometry incomplete.
@@ -79,7 +86,9 @@ parameter sets preserve their own vertex order and prior-tag association; they
 do not imply alignment to base vertices or geometry replacement. The bounded
 Null Shell update above is the supported geometry-binding exception.
 
-Uncompressed all-vertex normals are retained. Shell compressed normals support
+Uncompressed all-vertex normals are retained. Trivially compressed eight-bit
+colours on every vertex (attributes 5, 7 and 9, for faces, edges and markers)
+are framed and reported as unevaluated attributes. Shell compressed normals support
 schemes 1 (XYZ) and 7 (polar), 2–31 bits, producing local f32 vectors with source
 and quantization metadata. Polar inclination is measured from +Y. Normals are
 not normalized or transformed. Entity User/Unicode Options preserve ordered

@@ -4,7 +4,7 @@ An independent Rust reader for HSF (HOOPS Stream Format), with bounded syntax
 parsing and generic scene extraction. It preserves source locations, reports
 unsupported data explicitly, and runs without a vendor SDK or runtime.
 
-The crate supports selected **8.05, 14.50, 17.85, 18.00, 19.10, 20.90 and 21.15** profiles. It is an alpha
+The crate supports selected **8.05, 14.50, 17.85, 18.00, 19.00, 19.10, 20.90, 21.00 and 21.15** profiles. It is an alpha
 library, not a complete HSF implementation, renderer or CAD document reader.
 Requires **Rust 1.88 or later**.
 

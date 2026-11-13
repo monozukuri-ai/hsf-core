@@ -111,14 +111,22 @@ impl Parser<'_> {
         d: usize,
         c: &mut Cursor<'_>,
     ) -> Result<ClipRegionLayout, HsfError> {
+        // HSF 20.90 puts its precision byte before the options, as for the
+        // other records with single-precision points (`O 00 05 …`).
+        self.precision_byte(c, "hsf.unsupported_clip_region_precision")?;
         let options = c.u8()?;
-        // The 2026 DXF writer emits 0x05 with the same fixed count/XYZ framing.
-        // Its extra option remains opaque; clip evaluation is not implemented.
+        // The 2026 DXF writer emits 0x05 with the same fixed count/XYZ framing,
+        // as do earlier DXF/DWG reader drawings at 18.00 and SOLIDWORKS drawings
+        // at 20.90. The extra option remains opaque; clip evaluation is not
+        // implemented.
         let observed_opaque = options == 5
-            && (
-                self.document.header.version.major,
-                self.document.header.version.minor,
-            ) == (19, 10);
+            && matches!(
+                (
+                    self.document.header.version.major,
+                    self.document.header.version.minor,
+                ),
+                (18, 0) | (19, 10) | (20, 90)
+            );
         if options & !1 != 0 && !observed_opaque {
             return Err(unsupported(
                 "hsf.clip_region_options",
@@ -223,6 +231,10 @@ impl Parser<'_> {
         };
         // Complex nested profiles are not skippable: stop at the original R.
         const HIGH: u32 = 4
+            // Transparency style and transparency options share one variable
+            // field (`transparency`).
+            | 2
+            | 0x2000
             | 0x100
             | 0x10
             | 0x20
@@ -238,18 +250,17 @@ impl Parser<'_> {
             // Simple reflection: framed by `simple_reflection` (seen off, with no
             // further operands, in SOLIDWORKS eDrawings at 19.10).
             | 0x80000
-            // Interpolation and depth-writing switches carry no operand (the SDK
-            // class has no member for them): index markers, Gooch lighting,
-            // transparency depth writing.
+            // Interpolation and depth-writing switches carry no operand: index
+            // markers, Gooch lighting, transparency depth writing.
             | 0x1000000
             | 0x4000000
             | 0x8000000
             | 0x10000000
             | 0x80000000;
-        // Third word: only switches without operands are known from the SDK header
-        // (frame buffer effects, scaled displacement, bump mapping parallax,
-        // randomize vertices). Anything with operands (forced lock, contour,
-        // isoline, tints, edge join cutoff) has an unverified position: stop.
+        // Third word: only switches without operands are accepted (frame buffer
+        // effects, scaled displacement, bump mapping parallax, randomize
+        // vertices). Anything with operands (forced lock, contour, isoline,
+        // tints, edge join cutoff) has an unverified position: stop.
         const MORE: u32 = 2 | 4 | 0x100 | 0x200;
         if mask & 0x1c000000 != 0 || high_mask & !HIGH != 0 || more_mask & !MORE != 0 {
             return Err(unsupported(
@@ -258,6 +269,8 @@ impl Parser<'_> {
             ));
         }
         for (bits, minimum) in [
+            (2, (7, 10)),
+            (0x2000, (13, 10)),
             (0x100, (10, 2)),
             (0x60, (10, 2)),
             (0x400, (12, 10)),
@@ -278,7 +291,7 @@ impl Parser<'_> {
         let high_active = high_mask & high_value;
         let mut fields = Vec::new();
         for (bits, name) in [(0x3000, "hsr"), (0xc0000, "technology_quantization")] {
-            // SDK binary grammar uses mask here, even when the value is off.
+            // The binary grammar uses the mask here, even when the value is off.
             if mask & bits != 0 {
                 field(d, c, &mut fields, name, "u8", 1)?;
             }
@@ -373,6 +386,12 @@ impl Parser<'_> {
         }
         if active & 0x1000000 != 0 {
             self.hidden_line(d, c, &mut fields)?;
+        }
+        // NURBS, LOD and tessellation options (unsupported above) come between
+        // the hidden-line options and the transparency field, cut geometry
+        // (unsupported) between it and the depth range.
+        if high_active & 0x2002 != 0 {
+            self.transparency(d, c, &mut fields)?;
         }
         for (bits, name, encoding, n) in [
             (0x10, "depth_range", "f32_le", 8),
@@ -470,6 +489,55 @@ impl Parser<'_> {
         }
         if flags & 0x100000 != 0 {
             field(d, c, fields, "hidden_line_hsr", "u8", 1)?;
+        }
+        Ok(())
+    }
+
+    /// Transparency (style 0x2 or options 0x2000 of the second word): one byte,
+    /// a second when bit 7 is set. The style is the low nibble; depth peeling
+    /// layers (one byte) follow when 0x10 is set and the minimum area (f32)
+    /// when 0x20. Z-sort preferences (0x100, 0x200) carry no operand. The
+    /// peeling algorithm (0x40) and other bits have no verified operand: stop.
+    fn transparency(
+        &self,
+        d: usize,
+        c: &mut Cursor<'_>,
+        fields: &mut Vec<OperandField>,
+    ) -> Result<(), HsfError> {
+        let at = c.pos;
+        let mut flags = u32::from(c.u8()?);
+        if flags & 0x80 != 0 {
+            flags |= u32::from(c.u8()?) << 8;
+        }
+        if flags & !0x3bf != 0 {
+            return Err(unsupported(
+                "hsf.transparency_options_mask",
+                "Unknown transparency options",
+            ));
+        }
+        if flags & 0x30 != 0
+            && (
+                self.document.header.version.major,
+                self.document.header.version.minor,
+            ) < (13, 10)
+        {
+            return Err(unsupported(
+                "hsf.rendering_options_version",
+                "Depth peeling options require HSF 13.10",
+            ));
+        }
+        fields.push(OperandField {
+            name: "transparency_options".into(),
+            encoding: "uint_le".into(),
+            source: span(d, at, c.pos - at),
+        });
+        for (bit, name, encoding, n) in [
+            (0x10, "depth_peeling_layers", "u8", 1),
+            (0x20, "depth_peeling_min_area", "f32_le", 4),
+        ] {
+            if flags & bit != 0 {
+                field(d, c, fields, name, encoding, n)?;
+            }
         }
         Ok(())
     }

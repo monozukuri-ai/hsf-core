@@ -251,7 +251,7 @@ fn unknown_profiles_stop_at_opcode_without_scanning() {
             "8.05",
             "hsf.unsupported_camera_near_limit_version",
         ),
-        (b"M\x01".to_vec(), "19.10", "hsf.mesh_flags"),
+        (b"M\x02".to_vec(), "19.10", "hsf.mesh_flags"),
         (bad_attribute, "19.10", "hsf.mesh_attribute"),
         (bad_bits, "19.10", "hsf.mesh_parameter_bits"),
     ] {

@@ -186,17 +186,23 @@ fn extended_color_selectors_are_opaque_and_version_bounded() {
             .code,
         "hsf.color_mask"
     );
-    assert_eq!(
-        parsed(
-            b"~\x80\x81\x80\x02\xff\xff\xff\0",
-            "19.10",
-            ParseMode::Strict
-        )
-        .unwrap_err()
-        .diagnostic
-        .code,
-        "hsf.color_mask"
-    );
+    // RGB colours carry ambient down (0x2000000) at 19.10 too, but not the cut
+    // face contrast selector, and neither before.
+    let rgb = b"~\x80\x81\x80\x02\xff\xff\xff\0";
+    let p = parsed(rgb, "19.10", ParseMode::Strict).unwrap();
+    assert_eq!(p.data.records[0].value, Some(0x02808180));
+    for (b, version) in [
+        (rgb.as_slice(), "14.50"),
+        (b"~\x80\x81\x80\x04\xff\xff\xff\0".as_slice(), "19.10"),
+    ] {
+        assert_eq!(
+            parsed(b, version, ParseMode::Strict)
+                .unwrap_err()
+                .diagnostic
+                .code,
+            "hsf.color_mask"
+        );
+    }
 }
 #[test]
 fn all_operand_cuts_are_invalid_in_both_modes() {
@@ -225,7 +231,9 @@ fn all_operand_cuts_are_invalid_in_both_modes() {
 }
 #[test]
 fn bad_lengths_numbers_unknown_flags_and_limits_fail_closed() {
-    for flags in [1u16, 4, 0x4000, 0x8000, 0x1500] {
+    // Global quantization, one-primitive omission, unknown bits, and quantized
+    // points without an unrestricted axis.
+    for flags in [8u16, 4, 0x4000, 0x8000, 0x1501] {
         let b = [vec![16], flags.to_le_bytes().to_vec(), b"h\x01\0".to_vec()].concat();
         let p = parsed(&b, "19.10", ParseMode::Partial).unwrap();
         assert!(p.data.records.is_empty());

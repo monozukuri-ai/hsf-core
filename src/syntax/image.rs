@@ -7,7 +7,9 @@ use super::*;
 pub enum ImageProfile {
     #[default]
     Disabled,
-    /// Observed HSF 19.10: u32 flags 0xa3, named local RGBA, baseline JPEG.
+    /// Observed at HSF 19.00, 19.10 and 20.90: u32 flags, a baseline JPEG;
+    /// 0xa3 (named local RGBA) adds constant or RLE alpha, 0x87 (named JPEG)
+    /// has none.
     U32RgbaJpegV1,
 }
 
@@ -21,9 +23,10 @@ pub struct ImageLayout {
     pub height: u32,
     pub compression: u8,
     pub data: SourceSpan,
-    pub alpha_compression: u8,
+    /// None for formats without an alpha channel (flags 0x87).
+    pub alpha_compression: Option<u8>,
     /// One constant byte or encoded RLE; never an expanded pixel allocation.
-    pub alpha: SourceSpan,
+    pub alpha: Option<SourceSpan>,
 }
 
 fn invalid(message: &str) -> HsfError {
@@ -45,9 +48,12 @@ impl Parser<'_> {
             ));
         }
         let version = &self.document.header.version;
-        if !matches!((version.major, version.minor), (19, 10) | (20, 90)) {
+        if !matches!(
+            (version.major, version.minor),
+            (19, 0) | (19, 10) | (20, 90)
+        ) {
             return Err(unsupported(
-                "The u32 RGBA JPEG profile is limited to HSF 19.10 and 20.90",
+                "The u32 JPEG image profile is limited to HSF 19.00, 19.10 and 20.90",
             ));
         }
         self.budget.charge_output(1024)?;
@@ -57,10 +63,12 @@ impl Parser<'_> {
         let from = c.pos;
         let position = c.take(d, 12)?;
         progress::finite(&c.data[from..c.pos], "hsf.nonfinite_image")?;
+        // 0xa3: named (0x80), local texture (0x20), RGBA (3); 0x87: named, JPEG
+        // (7). Only these observed combinations are framed.
         let format_options = c.u32()?;
-        if format_options != 0xa3 {
+        if !matches!(format_options, 0xa3 | 0x87) {
             return Err(unsupported(
-                "Only the observed named local RGBA image flags are supported",
+                "Only the observed named RGBA and named JPEG image flags are supported",
             ));
         }
         let n = c.u8()?;
@@ -97,17 +105,23 @@ impl Parser<'_> {
         let start = c.pos;
         let data = c.array(d, n, 1)?;
         jpeg_envelope(&c.data[start..c.pos], width, height)?;
-        let alpha_compression = c.u8()?;
-        let alpha = match alpha_compression {
-            0 => c.take(d, 1)?,
-            1 => {
-                let n = c.nonnegative()?;
-                let start = c.pos;
-                let alpha = c.array(d, n, 1)?;
-                alpha_rle(&c.data[start..c.pos], pixels)?;
-                alpha
-            }
-            _ => return Err(unsupported("Unknown JPEG alpha encoding")),
+        // A JPEG-format image ends with its data; RGBA adds the alpha channel.
+        let (alpha_compression, alpha) = if format_options == 0x87 {
+            (None, None)
+        } else {
+            let alpha_compression = c.u8()?;
+            let alpha = match alpha_compression {
+                0 => c.take(d, 1)?,
+                1 => {
+                    let n = c.nonnegative()?;
+                    let start = c.pos;
+                    let alpha = c.array(d, n, 1)?;
+                    alpha_rle(&c.data[start..c.pos], pixels)?;
+                    alpha
+                }
+                _ => return Err(unsupported("Unknown JPEG alpha encoding")),
+            };
+            (Some(alpha_compression), Some(alpha))
         };
         if self.options.mode == ParseMode::Strict {
             return Err(error(
@@ -131,7 +145,12 @@ impl Parser<'_> {
             Some("Syntax continues with an experimental boundary; result remains partial".into());
         self.diagnostics.push(diagnostic);
         Ok(ImageLayout {
-            profile: "u32_rgba_jpeg_v1".into(),
+            profile: if format_options == 0x87 {
+                "u32_jpeg_v1"
+            } else {
+                "u32_rgba_jpeg_v1"
+            }
+            .into(),
             position,
             format_options,
             name,

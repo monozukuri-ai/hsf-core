@@ -1200,7 +1200,7 @@ impl Builder<'_> {
                 });
             }
             b'@' | b'-' | 0x0d => self.pattern_attribute(r, n)?,
-            b'H' | b'F' | b'"' | b'R' | b'O' | b'?' | 8 | 9 | 0x0c => {
+            b'H' | b'F' | b'"' | b'R' | b'O' | b'?' | b'P' | 8 | 9 | 0x0c => {
                 self.budget.charge_output(2048)?;
                 let settings = self.render_settings(r)?;
                 self.issue(r, "hsf.rendering_semantics", "Render setting operands are retained; their effects are not evaluated and placements are withheld")?;
@@ -1287,7 +1287,7 @@ impl Builder<'_> {
                 }
                 self.data.nodes[n].face_color = self.data.nodes[n].display.colors.get(0).cloned();
             }
-            b'X' | 0x10 | b'l' | b'L' | b'G' | b'C' | b'c' | b'T' | b'x' => {
+            b'X' | 0x10 | b'l' | b'L' | b'G' | b'C' | b'c' | b'E' | b'e' | b'T' | b'x' => {
                 if r.primitive().is_some_and(|p| p.text_region.is_some()) {
                     self.budget.charge_output(2048)?;
                     self.issue(r, "hsf.text_region_semantics",

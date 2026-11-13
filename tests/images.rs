@@ -48,7 +48,10 @@ fn image_is_opt_in_partial_and_preserves_owned_spans() {
     assert_eq!(p.data.records.len(), 2);
     let i = p.data.records[0].image().unwrap();
     assert_eq!((i.width, i.height), (3, 1));
-    assert_eq!(p.data.source_bytes(&i.alpha).unwrap(), &[255]);
+    assert_eq!(
+        p.data.source_bytes(i.alpha.as_ref().unwrap()).unwrap(),
+        &[255]
+    );
     assert_eq!(p.data.source_bytes(&i.name).unwrap(), b"n");
     let strict = ParseOptions {
         mode: ParseMode::Strict,

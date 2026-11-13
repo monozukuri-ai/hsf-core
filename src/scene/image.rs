@@ -18,8 +18,9 @@ pub struct ImageDefinition {
     pub compression: u8,
     /// Encoded JPEG; no entropy decoding or pixel allocation is performed.
     pub data_source: SourceSpan,
-    pub alpha_compression: u8,
-    pub alpha_source: SourceSpan,
+    /// None for formats without an alpha channel.
+    pub alpha_compression: Option<u8>,
+    pub alpha_source: Option<SourceSpan>,
     pub interpretation_status: Status,
 }
 

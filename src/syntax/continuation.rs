@@ -25,7 +25,11 @@ pub struct GridMeshLayout {
     pub rows: u32,
     pub columns: u32,
     pub vertex_count: u32,
+    /// f32 XYZ triples, or the packed codes when `point_quantization` is set.
     pub vertices: SourceSpan,
+    /// Trivially quantized points (flag 1), framed as Shell points are.
+    #[serde(default)]
+    pub point_quantization: Option<PointQuantization>,
     pub attributes: Vec<GridAttributeLayout>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -136,10 +140,12 @@ impl Parser<'_> {
         c: &mut Cursor<'_>,
     ) -> Result<GridMeshLayout, HsfError> {
         let flags = c.u8()?;
-        if flags & !8 != 0 {
+        // Flag 1: trivially quantized points, as in Shells (the CATIA V5
+        // eDrawings publisher writes image quads this way at 19.00).
+        if flags & !9 != 0 {
             return Err(unsupported(
                 "hsf.mesh_flags",
-                "Only uncompressed Mesh points with bounded optional attributes are supported",
+                "Only uncompressed or trivially quantized Mesh points with bounded optional attributes are supported",
             ));
         }
         let rows = c.nonnegative()?;
@@ -160,12 +166,14 @@ impl Parser<'_> {
                     "Mesh dimensions overflow the point count",
                 )
             })?;
-        charge(
-            &mut self.vertices,
-            u64::from(vertex_count),
-            self.options.max_vertices,
-            "hsf.limit_vertices",
-        )?;
+        if flags & 1 == 0 {
+            charge(
+                &mut self.vertices,
+                u64::from(vertex_count),
+                self.options.max_vertices,
+                "hsf.limit_vertices",
+            )?;
+        }
         let cells = u64::from(rows - 1) * u64::from(columns - 1);
         // Two generated triangle faces per cell, each with 3 IDs plus a count.
         charge(
@@ -174,10 +182,24 @@ impl Parser<'_> {
             self.options.max_face_values,
             "hsf.limit_face_values",
         )?;
-        let at = c.pos;
-        // Unlike Shell, Mesh has no separate point-count word here.
-        let vertices = c.array(d, vertex_count, 12)?;
-        finite(&c.data[at..c.pos])?;
+        let (vertices, point_quantization) = if flags & 1 != 0 {
+            // Quantized points carry their own count, which must match the grid.
+            let (count, codes, quantization) = self.quantized_points(d, c)?;
+            if count != vertex_count {
+                return Err(error(
+                    "hsf.invalid_mesh_count",
+                    Status::Invalid,
+                    "Quantized point count differs from rows times columns",
+                ));
+            }
+            (codes, quantization)
+        } else {
+            let at = c.pos;
+            // Unlike Shell, Mesh has no separate point-count word here.
+            let vertices = c.array(d, vertex_count, 12)?;
+            finite(&c.data[at..c.pos])?;
+            (vertices, None)
+        };
         let mut attributes: Vec<GridAttributeLayout> = vec![];
         if flags & 8 != 0 {
             loop {
@@ -273,6 +295,7 @@ impl Parser<'_> {
             columns,
             vertex_count,
             vertices,
+            point_quantization,
             attributes,
         })
     }

@@ -351,8 +351,8 @@ fn render_fixed_fields_and_legacy_cut_edge_have_exact_order() {
         .unwrap();
         assert_eq!(p.data.records[0].rendering().unwrap().fields.len(), fields);
     }
-    // These selectors, observed at 18.00, 19.10 and 20.90, have no channel
-    // operand in the SDK grammar.
+    // These selectors, observed at 18.00, 19.10 and 20.90, carry no channel
+    // operand.
     for selector in [0x2000000u32, 0x4000000] {
         let payload = [4, 4, selector, selector]
             .iter()

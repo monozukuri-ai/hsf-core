@@ -20,15 +20,17 @@ pub const SYNTAX_OPCODES: &[u8] = &[
     0, b';', b'I', b'B', b'b', b'(', b')', b's', b'<', b'{', b'r', b'q', b'U', b'v', b'Z', b'z',
     b'S', b'%', b'~', b'V', b'&', b'l', b'L', b'C', b'c', b'T', b'x', 0x16, b'h', b'}', b'J', b'f',
     b'+', b'H', b'F', b'"', b'=', 0x0e, b'@', b'*', b'R', b'O', b'n', b'-', 0x0d, 1, b't', b'>',
-    b'?', 8, 9, b'M', b'X', b'$', 0x10, b'G', 0x0c, b'i', b'j', b'0', b'm', b'!',
+    b'?', 8, 9, b'M', b'X', b'$', 0x10, b'G', 0x0c, b'i', b'j', b'0', b'm', b'!', b'P', b'E', b'e',
 ];
 pub const SYNTAX_VERSIONS: &[(u16, u16)] = &[
     (8, 5),
     (14, 50),
     (17, 85),
     (18, 0),
+    (19, 0),
     (19, 10),
     (20, 90),
+    (21, 0),
     (21, 15),
 ];
 
@@ -278,6 +280,9 @@ pub struct PrimitiveLayout {
     pub encoding: Option<u8>,
     pub text: Option<SourceSpan>,
     pub text_region: Option<TextRegionLayout>,
+    /// Elliptical arcs: the parametric start and end (two f32, 0–1).
+    #[serde(default)]
+    pub limits: Option<SourceSpan>,
 }
 
 /// Raw region controls and coordinates. Space, alignment and glyph layout are
@@ -915,6 +920,10 @@ impl Parser<'_> {
                     _ => "text_with_encoding",
                 }
             }
+            b'E' | b'e' => {
+                r.layout = Some(RecordLayout::Primitive(Box::new(self.ellipse(op, d, c)?)));
+                if op == b'E' { "ellipse" } else { "elliptical_arc" }
+            }
             b'S' => {
                 self.precision_byte(c, "hsf.unsupported_shell_precision")?;
                 r.layout = Some(RecordLayout::Shell(Box::new(self.shell(d, c)?)));
@@ -965,6 +974,17 @@ impl Parser<'_> {
                 match op { b'@' => "marker_symbol", b'-' => "line_pattern", _ => "edge_pattern" }
             }
             b'*' => { r.value = Some(u32::from(c.u8()?)); "text_alignment" }
+            b'P' => {
+                // TKE_Face_Pattern: one enumerated pattern byte. A named form
+                // (255 and a name, as line patterns write) is unverified here.
+                let pattern = c.u8()?;
+                if pattern == 255 {
+                    return Err(error("hsf.face_pattern", Status::Unsupported,
+                        "Named face patterns are not framed"));
+                }
+                r.value = Some(u32::from(pattern));
+                "face_pattern"
+            }
             b'O' => { r.layout = Some(RecordLayout::ClipRegion(Box::new(self.clip_region(d, c)?))); "clip_region" }
             b'n' => { r.layout = Some(RecordLayout::UserIndex(Box::new(self.user_index(d, c)?))); "user_index" }
             b'm' => {
@@ -989,12 +1009,15 @@ impl Parser<'_> {
                     value |= u32::from(c.u8()?) << 24;
                 }
                 // Observed in the 2026 DXF writer, in SOLIDWORKS 2025–2026
-                // eDrawings at HSF 20.90 and in the Creo 11 publisher's 21.15.
-                // The fixed-width second extension frames this bit, but its
-                // geometry meaning is not established. Scene evaluation retains
-                // it as opaque state.
+                // eDrawings at HSF 20.90 and in the Creo 10 and 11 publishers'
+                // 21.00 and 21.15. The fixed-width second extension frames this
+                // bit, but its geometry meaning is not established. Scene
+                // evaluation retains it as opaque state.
                 let v = &self.document.header.version;
-                let opaque = if matches!((v.major, v.minor), (19, 10) | (20, 90) | (21, 15)) {
+                let opaque = if matches!(
+                    (v.major, v.minor),
+                    (19, 10) | (20, 90) | (21, 0) | (21, 15)
+                ) {
                     0x0400_0000
                 } else {
                     0
@@ -1047,7 +1070,7 @@ impl Parser<'_> {
                 let encoding = c.u8()?;
                 let length = u64::from(c.u8()?);
                 let lookup = self.payload(d, c, length)?;
-                // SDK binary reader uses signed int, despite the HTML Byte table.
+                // A signed int length, despite the Byte in the HTML table.
                 let length = u64::from(c.nonnegative()?);
                 let data = self.payload(d, c, length)?;
                 r.layout = Some(RecordLayout::Font(Box::new(FontLayout { format, name, encoding, lookup, data })));
@@ -1340,6 +1363,7 @@ impl Parser<'_> {
             encoding: None,
             text: None,
             text_region: None,
+            limits: None,
         };
         if matches!(op, b'C' | b'c') && version >= (12, 15) {
             let flags = c.u8()?;
@@ -1414,6 +1438,51 @@ impl Parser<'_> {
             }
         }
         Ok(layout)
+    }
+    /// Ellipse (`E`) and elliptical arc (`e`), per the public opcode reference:
+    /// the center, a point on the major axis and one on the minor axis, then
+    /// for arcs the parametric start and end (0–1). Whether HSF 20.90 puts its
+    /// precision byte here is unobserved, so 20.90 and later stop.
+    fn ellipse(
+        &mut self,
+        op: u8,
+        d: usize,
+        c: &mut Cursor<'_>,
+    ) -> Result<PrimitiveLayout, HsfError> {
+        if (
+            self.document.header.version.major,
+            self.document.header.version.minor,
+        ) >= (20, 90)
+        {
+            return Err(error(
+                "hsf.unsupported_primitive_precision",
+                Status::Unsupported,
+                "Ellipse framing is unverified for HSF 20.90 and later",
+            ));
+        }
+        charge(
+            &mut self.vertices,
+            3,
+            self.options.max_vertices,
+            "hsf.limit_vertices",
+        )?;
+        let at = c.pos;
+        let points = c.array(d, 3, 12)?;
+        let limits = if op == b'e' {
+            Some(c.take(d, 8)?)
+        } else {
+            None
+        };
+        progress::finite(&c.data[at..c.pos], "hsf.nonfinite_ellipse")?;
+        Ok(PrimitiveLayout {
+            point_count: 3,
+            points,
+            center: None,
+            encoding: None,
+            text: None,
+            text_region: None,
+            limits,
+        })
     }
     fn shell(&mut self, d: usize, c: &mut Cursor<'_>) -> Result<ShellLayout, HsfError> {
         let flags = c.u8()?;
@@ -1694,11 +1763,11 @@ impl Parser<'_> {
         ))
     }
     /// HSF 20.90 writes one byte right after the opcode of bounds, cameras,
-    /// views, modelling matrices, shells and the simple primitives (markers,
-    /// lines, polylines, polygons, circles, arcs and text), before their
-    /// single-precision operands (`S 00 90 …` against 19.10's `S 90 …`). Only
-    /// zero has been observed; any other value stops instead of guessing a
-    /// double-precision layout.
+    /// views, modelling matrices, shells, clip regions and the simple
+    /// primitives (markers, lines, polylines, polygons, circles, arcs and
+    /// text), before their single-precision operands (`S 00 90 …` against
+    /// 19.10's `S 90 …`). Only zero has been observed; any other value stops
+    /// instead of guessing a double-precision layout.
     fn precision_byte(&self, c: &mut Cursor<'_>, code: &str) -> Result<(), HsfError> {
         let version = (
             self.document.header.version.major,

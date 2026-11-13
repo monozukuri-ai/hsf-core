@@ -27,6 +27,10 @@ pub struct Primitive {
     /// Explicit center only; no fitted circle, tessellation or projection.
     pub center: Option<Attribute<[f32; 3]>>,
     pub text: Option<TextValue>,
+    /// Elliptical arcs only: the stored parametric start and end (0–1). The
+    /// points are the center and one point on each axis; nothing is fitted or
+    /// tessellated.
+    pub limits: Option<Attribute<[f32; 2]>>,
     #[serde(skip)]
     pub points: Vec<[f32; 3]>,
 }
@@ -213,7 +217,9 @@ pub(super) fn text(
             "iso_8859_1",
             Some(bytes.iter().map(|b| char::from(*b)).collect()),
         ),
-        Some(5) => {
+        // Code 8 (UTF-16 in the published encoding list) is written by the
+        // DXF/DWG reader's 18.00 drawings with the same little-endian units.
+        Some(5 | 8) => {
             if bytes.len() % 2 != 0 {
                 return Err(invalid());
             }
@@ -289,13 +295,65 @@ pub(super) fn decode(
             .chunks_exact(4)
             .map(|b| u32::from_le_bytes(b.try_into().unwrap()))
             .collect();
-        let mut values = doc
-            .source_bytes(&l.points)
-            .expect("framed points")
-            .chunks_exact(4)
-            .map(|b| f32::from_le_bytes(b.try_into().unwrap()));
+        let stored = doc.source_bytes(&l.points).expect("framed points");
+        let values: Vec<f32> = match &l.point_quantization {
+            // Codes run point by point over the unrestricted axes; each spans
+            // its axis of the stored box (minima first, then maxima).
+            Some(q) => {
+                let n = usize::from(l.dimensions);
+                let corners: Vec<f32> = doc
+                    .source_bytes(&q.bounds)
+                    .expect("framed bounds")
+                    .chunks_exact(4)
+                    .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
+                    .collect();
+                (0..u64::from(l.point_count) * n as u64)
+                    .map(|i| {
+                        let axis = (i % n as u64) as usize;
+                        polyhedron::sample(
+                            stored,
+                            i,
+                            l.dimensions,
+                            q.bits_per_sample,
+                            [corners[axis], corners[axis + n]],
+                        )
+                    })
+                    .collect()
+            }
+            None => stored
+                .chunks_exact(4)
+                .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
+                .collect(),
+        };
+        let mut values = values.into_iter();
         let axes: [u16; 3] = std::array::from_fn(|a| (l.flags >> (8 + 2 * a)) & 3);
-        let extra = doc.source_bytes(&l.leftovers).expect("framed axis values");
+        let stored_extra = doc.source_bytes(&l.leftovers).expect("framed axis values");
+        // Quantized shared/per-component values (one axis) become the same f32
+        // sequence the uncompressed layout stores.
+        let decoded_extra: Vec<u8>;
+        let extra = match &l.leftover_quantization {
+            Some(q) => {
+                let range = doc.source_bytes(&q.bounds).expect("framed range");
+                let range =
+                    [0, 4].map(|at| f32::from_le_bytes(range[at..at + 4].try_into().unwrap()));
+                let count = axes
+                    .iter()
+                    .map(|mode| match mode {
+                        2 => 1,
+                        3 => u64::from(l.primitive_count),
+                        _ => 0,
+                    })
+                    .sum::<u64>();
+                decoded_extra = (0..count)
+                    .flat_map(|i| {
+                        polyhedron::sample(stored_extra, i, 1, q.bits_per_sample, range)
+                            .to_le_bytes()
+                    })
+                    .collect();
+                decoded_extra.as_slice()
+            }
+            None => stored_extra,
+        };
         let mut offset = 0usize;
         let axis_values: [&[u8]; 3] = std::array::from_fn(|a| {
             let count = match axes[a] {
@@ -331,6 +389,7 @@ pub(super) fn decode(
             part_lengths: lengths,
             center: None,
             text: None,
+            limits: None,
             points,
         });
     }
@@ -368,6 +427,15 @@ pub(super) fn decode(
         part_lengths: vec![],
         center,
         text,
+        limits: layout.limits.as_ref().map(|s| {
+            let bytes = doc.source_bytes(s).expect("framed limits");
+            Attribute {
+                value: std::array::from_fn(|i| {
+                    f32::from_le_bytes(bytes[i * 4..i * 4 + 4].try_into().expect("float"))
+                }),
+                source: s.clone(),
+            }
+        }),
         points,
     })
 }

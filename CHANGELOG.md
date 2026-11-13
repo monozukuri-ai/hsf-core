@@ -1,6 +1,71 @@
 # Changelog
 
-## Unreleased (0.1.0-alpha.6, contract 38)
+## Unreleased
+
+eDrawings drawings and third-party publishers read further: the CATIA V5 (HSF
+19.00) and Creo 10 (21.00) publishers have syntax profiles, and several records
+that drawings and older publishers write are framed.
+
+Profiles
+
+- `19.00` and `21.00` join the syntax profiles (`SYNTAX_VERSIONS`). 19.00
+  follows the version-gated rules between 18.00 and 19.10, without the
+  allowances observed only at 19.10; 21.00 is framed as 20.90 (precision byte,
+  reference layout), with the Visibility bit 26 allowance.
+
+Records
+
+- Rendering Options read the transparency field that the transparency style
+  (second-word bit 0x2, 7.10+) and transparency options (0x2000, 13.10+) select:
+  one byte, a second when bit 7 is set, with the style in the low nibble, then
+  the depth peeling layers (0x10) and minimum area (0x20). Z-sort preferences
+  carry no operand; the peeling algorithm (0x40) and unknown bits stop with
+  `hsf.transparency_options_mask`. The field is retained as
+  `transparency_options`, after the hidden-line options.
+- Clip regions take the 20.90 precision byte before their options (a nonzero
+  value stops with `hsf.unsupported_clip_region_precision`), and the opaque
+  option 5 is accepted at 18.00 and 20.90 as at 19.10. A 20.90 clip region was
+  previously misread from the byte after its opcode.
+- The empirical image profile accepts flags 0x87 (named JPEG) besides 0xa3
+  (named local RGBA) and applies to 19.00 too. A JPEG-format image ends with its
+  data: `ImageLayout.alpha_compression`/`alpha` and
+  `ImageDefinition.alpha_compression`/`alpha_source` are now `Option` (`None`
+  for these images), and its layout profile is `u32_jpeg_v1`.
+- Rectangular Meshes with trivially quantized points (flag 1) are framed as
+  Shell points are and decoded by the scene: the count must equal rows times
+  columns. `GridMeshLayout.point_quantization` marks them.
+- Compressed PolyPolylines (flag 1) are framed as trivial quantization: the
+  scheme, the box of the unrestricted axes, the bits per coordinate (i32) and
+  the packed codes; the shared or per-component values of one restricted axis
+  follow as their own quantized block. The scene decodes both.
+  `PolyPolylineLayout.point_quantization` and `leftover_quantization` mark
+  them. Values of two or more axes, three 8-bit axes and quantized batches
+  without an unrestricted axis stop (`hsf.poly_polyline_compression`,
+  `hsf.poly_polyline_dimensions`). Uncompressed batches no longer need an
+  unrestricted axis: every point can come from shared and per-component values.
+- Shell attributes 5, 7 and 9 (colours on every vertex, for faces, edges and
+  markers) are framed when trivially compressed with eight bits per channel and
+  retained as unsupported attributes (`hsf.mesh_attributes`); other widths stop
+  with `hsf.shell_attribute_compression`.
+- TKE_Face_Pattern (`P`, one byte) is framed as `face_pattern` and treated by
+  the scene as an unevaluated rendering setting; a named form (255) stops with
+  `hsf.face_pattern`.
+- TKE_Ellipse (`E`) and TKE_Elliptical_Arc (`e`) are framed: the center, a point
+  on each axis and, for arcs, the parametric start and end. They become
+  primitives of kinds `ellipse` and `elliptical_arc` with the three points;
+  `PrimitiveLayout.limits` and `Primitive.limits` hold the arc's limits. Nothing
+  is fitted or tessellated. Ellipses at 20.90 and later are unverified and stop
+  (`hsf.unsupported_primitive_precision`).
+- Colour records accept the ambient-down selector (0x2000000) at 19.10 on RGB
+  colours as on colour names; other versions still stop with `hsf.color_mask`.
+- Text encoding code 8 (UTF-16 in the published list) is decoded as
+  little-endian UTF-16, like code 5.
+- Capabilities add `transparency_options_framing`, `named_jpeg_images`,
+  `quantized_mesh_points`, `quantized_poly_polylines`,
+  `vertex_color_attribute_framing`, `face_pattern_framing` and
+  `ellipse_primitives`.
+
+## 0.1.0-alpha.6 (contract 38)
 
 Connectivity-compressed Shells, as the Creo 11 eDrawings publisher writes them,
 are decoded, and the scenes of large assemblies are built with much less memory.

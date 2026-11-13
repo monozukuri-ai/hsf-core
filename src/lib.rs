@@ -267,6 +267,13 @@ pub fn capabilities() -> Capabilities {
             "rendering_options_extended2_framing",
             "backquoted_segment_names",
             "traversal_subtree",
+            "transparency_options_framing",
+            "named_jpeg_images",
+            "quantized_mesh_points",
+            "quantized_poly_polylines",
+            "vertex_color_attribute_framing",
+            "face_pattern_framing",
+            "ellipse_primitives",
         ]
         .map(String::from)
         .to_vec(),

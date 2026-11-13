@@ -66,15 +66,19 @@ impl Parser<'_> {
                 mask |= u32::from(c.u8()?) << shift;
             }
         }
-        let extra = if opaque
-            && (
+        // Ambient down (0x2000000; with ambient up 0x100, the ambient colour)
+        // and cut face contrast (0x4000000) are observed at 19.10, the first on
+        // RGB colours too. They carry no extra operand.
+        let extra = match (
+            opaque,
+            (
                 self.document.header.version.major,
                 self.document.header.version.minor,
-            ) == (19, 10)
-        {
-            0x06000000
-        } else {
-            0
+            ),
+        ) {
+            (true, (19, 10)) => 0x06000000,
+            (false, (19, 10)) => 0x02000000,
+            _ => 0,
         };
         if mask & !(0x017f7f7f | 0x00808080 | extra) != 0 {
             return Err(unsupported(

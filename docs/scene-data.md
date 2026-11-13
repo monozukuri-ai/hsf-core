@@ -51,6 +51,10 @@ uses the `(r+1,c)`–`(r,c+1)` diagonal and sequential triangle-face IDs. Shell
 triangulation can be unsupported while the original arrays remain available.
 `Primitive.part_lengths` separates PolyPolyline components; no connecting lines
 are added between components. The whole batch remains one reference/tag target.
+Ellipse and elliptical arc primitives keep their center and axis points;
+`Primitive.limits` holds an arc's stored parametric start and end. Quantized
+Shell, Mesh and batch points are decoded to f32 within their stored boxes; the
+codes and boxes stay available in the syntax layouts.
 See [Supported features](supported-features.md#geometry-and-text).
 
 `null_shells` preserves placeholder/tag identity. A supported unique LOD 0 update

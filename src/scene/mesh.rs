@@ -291,18 +291,24 @@ pub(super) fn vectors(
         })
         .collect()
 }
-/// Decode quantized Shell points: each coordinate's code spans its axis of the
-/// stored box, packed as quantized parameters are (`polyhedron::sample`). The
-/// syntax checked the box is finite and ordered and the codes cover every point.
-fn dequantized_points(doc: &HsfDocument, s: &ShellLayout, q: &PointQuantization) -> Vec<[f32; 3]> {
+/// Decode quantized Shell or Mesh points: each coordinate's code spans its axis
+/// of the stored box, packed as quantized parameters are (`polyhedron::sample`).
+/// The syntax checked the box is finite and ordered and the codes cover every
+/// point.
+fn dequantized_points(
+    doc: &HsfDocument,
+    codes: &SourceSpan,
+    count: u32,
+    q: &PointQuantization,
+) -> Vec<[f32; 3]> {
     let corners: Vec<f32> = doc
         .source_bytes(&q.bounds)
         .expect("framed bounds")
         .chunks_exact(4)
         .map(|b| f32::from_le_bytes(b.try_into().expect("four bytes")))
         .collect();
-    let codes = doc.source_bytes(&s.vertices).expect("framed codes");
-    (0..u64::from(s.vertex_count))
+    let codes = doc.source_bytes(codes).expect("framed codes");
+    (0..u64::from(count))
         .map(|v| {
             std::array::from_fn(|axis| {
                 polyhedron::sample(
@@ -392,7 +398,7 @@ pub(super) fn decode(
         (decoded.vertices, decoded.face_list)
     } else {
         let vertices = match &s.point_quantization {
-            Some(q) => dequantized_points(doc, s, q),
+            Some(q) => dequantized_points(doc, &s.vertices, s.vertex_count, q),
             None => vectors(doc, &s.vertices, r)?,
         };
         let signed = s.extended_flags & 4 != 0;
@@ -547,7 +553,10 @@ fn grid(
     )?;
     // Account for vertices, optional normals, all derived indices and capacity growth.
     budget.charge_output(1024 + u64::from(l.vertex_count) * 24 + cells * 128)?;
-    let vertices = vectors(doc, &l.vertices, r)?;
+    let vertices = match &l.point_quantization {
+        Some(q) => dequantized_points(doc, &l.vertices, l.vertex_count, q),
+        None => vectors(doc, &l.vertices, r)?,
+    };
     let (vertex_normals, normals) = polyhedron::normals(doc, r, budget)?;
     let mut triangles = Vec::new();
     let mut triangle_faces = Vec::new();
