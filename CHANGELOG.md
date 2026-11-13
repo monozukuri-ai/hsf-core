@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.0-alpha.7 (contract 38)
 
 eDrawings drawings and third-party publishers read further: the CATIA V5 (HSF
 19.00) and Creo 10 (21.00) publishers have syntax profiles, and several records

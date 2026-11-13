@@ -10,7 +10,7 @@ readme = "README.md"
 repository = "https://github.com/monozukuri-ai/hsf-core"
 keywords = ["hsf", "cad", "parser", "geometry", "3d"]
 categories = ["parser-implementations", "graphics"]
-exclude = ["/.internal/**"]
+exclude = ["/.internal/**", "/scripts/**"]
 
 [dependencies]
 serde = { version = "1", features = ["derive", "rc"] }
