@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.0 (contract 38)
 
 HSF 7.00 streams, as early eDrawings writers produced them, and HSF 16.10 have
 syntax profiles, and drawings of third-party eDrawings publishers read further.
