@@ -200,7 +200,8 @@ option evidence, not evaluated runtime state.
 
 `TextureDefinition.image_name_matches` is a raw-byte name correlation over the
 consumed prefix, not a runtime binding. `images` retains encoded resources and
-their owner, reference point, dimensions, names and JPEG/alpha spans under the
+their owner, reference point, dimensions, names and JPEG/alpha spans (or the
+uncompressed pixel rows, `compression` 0) under the
 [experimental image profile](integrations.md#experimental-images).
 There is no pixel decoding, external loading or final material evaluation.
 

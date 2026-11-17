@@ -76,18 +76,27 @@ placements. Defaults leave both authorizations absent.
 ## Experimental images
 
 `ParseOptions.image_profile = ImageProfile::U32RgbaJpegV1` enables a bounded
-empirical HSF 19.00, 19.10 and 20.90 profile (20.90 puts its zero byte before
-the XYZ): finite XYZ, u32 flags 0xa3 (named local RGBA) or 0x87 (named JPEG), a
-nonempty byte-length name, positive i32 dimensions and JPEG data; RGBA images
-add constant/RLE alpha, JPEG-format images have none (`alpha` is `None`). The default is
+empirical profile for the versions images were observed in: HSF 7.00 and 16.10,
+where the format and its options are the published single byte, and 19.00,
+19.10 and 20.90, where they are a 32-bit word (20.90 puts its zero byte before
+the XYZ). An image is finite XYZ, the format field, a nonempty byte-length
+name, positive i32 dimensions, a compression byte and the pixels. Named (0x80)
+RGB (2), RGBA (3) and JPEG (7) images are framed, with or without the local
+texture flag (0x20): 0xa3 and 0x87 are the common fields. The pixels are a JPEG
+(compression 2) or, for RGB and RGBA, uncompressed rows of three or four bytes
+per pixel (compression 0). An RGBA image stored as JPEG adds constant/RLE
+alpha; every other form ends with its pixels (`alpha` is `None`). The layout
+profile names the field and the form: `u32_` or `byte_`, then `rgb_v1`,
+`rgba_v1`, `rgb_jpeg_v1`, `rgba_jpeg_v1` or `jpeg_v1`. The default is
 `ImageProfile::Disabled`; strict mode rejects the empirical profile. Partial
 mode emits `hsf.experimental_image` and never claims complete syntax.
 
 The JPEG check validates a baseline single-scan envelope and matching dimensions;
 it does not decode entropy data, quantization/Huffman tables or pixels. RLE alpha
 is counted without expansion and must fill exactly width × height pixels.
-`max_image_pixels` bounds the cumulative dimensions. Other flags/versions and
-JPEG profiles stop at the opcode; malformed recognized operands error.
+`max_image_pixels` bounds the cumulative dimensions. Unnamed, mapped and BGRA
+images, other options (an explicit size), other compressions, other versions
+and other JPEG profiles stop at the opcode; malformed recognized operands error.
 
 Scene inventory retains encoded image definitions, source spans, names, owners,
 dimensions and reference points. Images become taggable objects so later tags

@@ -21,10 +21,13 @@ pub const SYNTAX_OPCODES: &[u8] = &[
     b'S', b'%', b'~', b'V', b'&', b'l', b'L', b'C', b'c', b'T', b'x', 0x16, b'h', b'}', b'J', b'f',
     b'+', b'H', b'F', b'"', b'=', 0x0e, b'@', b'*', b'R', b'O', b'n', b'-', 0x0d, 1, b't', b'>',
     b'?', 8, 9, b'M', b'X', b'$', 0x10, b'G', 0x0c, b'i', b'j', b'0', b'm', b'!', b'P', b'E', b'e',
+    7, b'W', b'p',
 ];
 pub const SYNTAX_VERSIONS: &[(u16, u16)] = &[
+    (7, 0),
     (8, 5),
     (14, 50),
+    (16, 10),
     (17, 85),
     (18, 0),
     (19, 0),
@@ -985,6 +988,21 @@ impl Parser<'_> {
                 r.value = Some(u32::from(pattern));
                 "face_pattern"
             }
+            // TKE_Window: the left, right, bottom and top of the area the
+            // segment is drawn in, within -1..1 of the containing one.
+            b'W' => {
+                let v = &self.document.header.version;
+                if (v.major, v.minor) >= (20, 90) {
+                    return Err(error("hsf.unsupported_window_precision", Status::Unsupported,
+                        "Window framing is unverified for HSF 20.90 and later"));
+                }
+                let from = c.pos;
+                r.payload = Some(c.take(d, 16)?);
+                progress::finite(&c.data[from..c.pos], "hsf.nonfinite_window")?;
+                "window"
+            }
+            // TKE_Window_Pattern: one enumerated pattern byte.
+            b'p' => { r.value = Some(u32::from(c.u8()?)); "window_pattern" }
             b'O' => { r.layout = Some(RecordLayout::ClipRegion(Box::new(self.clip_region(d, c)?))); "clip_region" }
             b'n' => { r.layout = Some(RecordLayout::UserIndex(Box::new(self.user_index(d, c)?))); "user_index" }
             b'm' => {
@@ -1240,6 +1258,13 @@ impl Parser<'_> {
             b'v' => {
                 r.value = Some(c.u32()?);
                 "user_value"
+            }
+            // TKE_Callback: a 16-bit length and the callback settings string.
+            // The string names application routines; nothing is evaluated.
+            0x07 => {
+                let n = c.u16()?;
+                r.payload = Some(self.payload(d, c, u64::from(n))?);
+                "callback"
             }
             // Observed eDrawings private data does not match the public length /
             // stop-marker framing. Do not scan for ']' or guess an adjustment.

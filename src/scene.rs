@@ -128,6 +128,9 @@ pub struct VertexNormals {
     pub count: u32,
     pub source: SourceSpan,
     pub values_source: SourceSpan,
+    /// `f32_xyz`, `quantized_xyz`, `quantized_polar`, `connectivity`, or
+    /// `table_codes` (compression 3: codes into the published table of unit
+    /// vectors, retained as stored with no decoded vectors).
     pub encoding: String,
     pub compression: Option<u8>,
     pub bits_per_sample: Option<u8>,
@@ -1200,7 +1203,7 @@ impl Builder<'_> {
                 });
             }
             b'@' | b'-' | 0x0d => self.pattern_attribute(r, n)?,
-            b'H' | b'F' | b'"' | b'R' | b'O' | b'?' | b'P' | 8 | 9 | 0x0c => {
+            b'H' | b'F' | b'"' | b'R' | b'O' | b'?' | b'P' | b'W' | b'p' | 8 | 9 | 0x0c => {
                 self.budget.charge_output(2048)?;
                 let settings = self.render_settings(r)?;
                 self.issue(r, "hsf.rendering_semantics", "Render setting operands are retained; their effects are not evaluated and placements are withheld")?;

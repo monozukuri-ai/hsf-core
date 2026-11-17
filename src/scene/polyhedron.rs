@@ -64,6 +64,23 @@ pub(super) fn normals(
         return Ok((None, vec![]));
     };
     budget.charge_output(2048 + u64::from(count) * 24)?;
+    if compression == Some(3) {
+        // One code per vertex into the published table of unit vectors. The
+        // codes are retained as stored; no vector is produced from them.
+        return Ok((
+            Some(VertexNormals {
+                count,
+                source: source.clone(),
+                values_source: values_source.clone(),
+                encoding: "table_codes".into(),
+                compression,
+                bits_per_sample: bits,
+                packing: "byte_packed".into(),
+                bounds: vec![],
+            }),
+            vec![],
+        ));
+    }
     let bytes = doc.source_bytes(values_source).expect("framed normals");
     let (encoding, packing, bounds, values) = if let Some(bits) = bits {
         let polar = compression == Some(7);

@@ -16,7 +16,8 @@ pub struct ImageDefinition {
     pub width: u32,
     pub height: u32,
     pub compression: u8,
-    /// Encoded JPEG; no entropy decoding or pixel allocation is performed.
+    /// Encoded JPEG, or the uncompressed pixel rows (`compression` 0); no
+    /// decoding or pixel allocation is performed.
     pub data_source: SourceSpan,
     /// None for formats without an alpha channel.
     pub alpha_compression: Option<u8>,

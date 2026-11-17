@@ -1,6 +1,6 @@
 # Supported features and limitations
 
-Syntax profiles are selected for HSF **8.05, 14.50, 17.85, 18.00, 19.00, 19.10, 20.90, 21.00 and 21.15**. Availability within
+Syntax profiles are selected for HSF **7.00, 8.05, 14.50, 16.10, 17.85, 18.00, 19.00, 19.10, 20.90, 21.00 and 21.15**. Availability within
 a profile depends on record flags and operands. Unknown framing stops at the
 original opcode without searching for later markers. Use `capabilities()` for
 the current numeric opcode list and [Getting started](getting-started.md) for
@@ -16,6 +16,12 @@ remain unsupported; Priority (`0`, one i32) is framed and retained but ignored b
 the scene, since it orders drawing only. Selectability (`!`, six masks) is
 framed and ignored likewise, since it governs picking only. Face Pattern (`P`,
 one enumerated byte) is framed and treated as an unevaluated rendering setting.
+Callback (opcode 7, a 16-bit length and the settings string) is framed with its
+string as the payload and ignored by the scene: it names application routines.
+Window (`W`, the left, right, bottom and top of the area a segment is drawn in)
+and Window Pattern (`p`, one enumerated byte) are framed and treated as
+unevaluated rendering settings; Window stops at 20.90 and later, where its
+framing is unverified (`hsf.unsupported_window_precision`).
 User Index Data
 (`m`, HSF 17.80+ toolkits) is framed as a count followed by interleaved (index,
 size, bytes) entries and listed per segment with opaque bytes; producers assign
@@ -41,6 +47,8 @@ there and carry no condition. Otherwise the records are framed as in 19.10.
 HSF 21.00 and 21.15 (the Creo 10 and Creo 11 eDrawings publishers) are framed
 as 20.90; 17.85 and 18.00 (SOLIDWORKS 2011 and 2012) and 19.00 (the CATIA V5
 eDrawings publisher) follow the version-gated rules between 14.50 and 19.10.
+HSF 7.00 (early eDrawings writers) follows the rules below 8.05, and 16.10
+those between 14.50 and 17.85.
 
 Multiple alternating compressed/uncompressed blocks are supported. Internal
 compression uses zlib; nested compression is unsupported. Stop Compression must
@@ -91,7 +99,10 @@ colours on every vertex (attributes 5, 7 and 9, for faces, edges and markers)
 are framed and reported as unevaluated attributes. Shell compressed normals support
 schemes 1 (XYZ) and 7 (polar), 2–31 bits, producing local f32 vectors with source
 and quantization metadata. Polar inclination is measured from +Y. Normals are
-not normalized or transformed. Entity User/Unicode Options preserve ordered
+not normalized or transformed. At HSF 7.00, scheme 3 (one 8- or 10-bit code per
+vertex into the published table of unit vectors, packed to the byte) is framed
+and its codes are retained as stored (`VertexNormals.encoding` is
+`table_codes`); no vectors are produced from them. Entity User/Unicode Options preserve ordered
 fields and decode ASCII/strict UTF-16LE when applicable; product meanings remain
 unsupported. Unknown optional attributes still stop at the enclosing opcode.
 

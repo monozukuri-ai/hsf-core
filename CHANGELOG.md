@@ -1,5 +1,43 @@
 # Changelog
 
+## Unreleased
+
+HSF 7.00 streams, as early eDrawings writers produced them, and HSF 16.10 have
+syntax profiles, and drawings of third-party eDrawings publishers read further.
+
+Profiles
+
+- `7.00` and `16.10` join the syntax profiles (`SYNTAX_VERSIONS`). 7.00 follows
+  the version-gated rules below 8.05, 16.10 those between 14.50 and 17.85.
+
+Records
+
+- TKE_Callback (opcode 7) is framed: a 16-bit length and the callback settings
+  string, retained as the record's payload under the kind `callback`. The scene
+  ignores it. The opcode joins `SYNTAX_OPCODES`.
+- TKE_Window (`W`, four floats: the left, right, bottom and top of the area a
+  segment is drawn in) and TKE_Window_Pattern (`p`, one enumerated byte) are
+  framed as `window` and `window_pattern`. The scene keeps them as unevaluated
+  rendering settings (`hsf.rendering_semantics`). Window stops at 20.90 and
+  later (`hsf.unsupported_window_precision`).
+- The image profile frames more of the images it meets. The format and its
+  options are read as the published single byte at HSF 7.00 and 16.10 and as a
+  32-bit word at 19.00, 19.10 and 20.90. Named RGB, RGBA and JPEG images are
+  framed with or without the local texture flag (it accepted the fields 0xa3
+  and 0x87 only), and RGB and RGBA images may be stored as uncompressed rows
+  (`compression` 0, the rows in `ImageLayout.data`, `alpha` `None`). Layout
+  profiles are `u32_` or `byte_` followed by `rgb_v1`, `rgba_v1`, `rgb_jpeg_v1`,
+  `rgba_jpeg_v1` or `jpeg_v1`; `u32_rgba_jpeg_v1` and `u32_jpeg_v1` are
+  unchanged. Unnamed, mapped and BGRA images, explicit sizes and other
+  compressions stop with `hsf.image_profile`.
+- At HSF 7.00, Shell normals coded as indices into the published table of unit
+  vectors (attribute 1, compression scheme 3, 8 or 10 bits) are framed: the
+  codes are packed to the byte, so their length is the vertex count times the
+  width, rounded up to a byte. Other widths stop with
+  `hsf.shell_attribute_bits`, and other versions still stop at the scheme. The
+  scene keeps the codes as stored (`VertexNormals.encoding` is `table_codes`,
+  `Mesh.normals` stays empty); nothing is expanded from the table.
+
 ## 0.1.0-alpha.7 (contract 38)
 
 eDrawings drawings and third-party publishers read further: the CATIA V5 (HSF

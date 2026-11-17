@@ -7,9 +7,11 @@ use super::*;
 pub enum ImageProfile {
     #[default]
     Disabled,
-    /// Observed at HSF 19.00, 19.10 and 20.90: u32 flags, a baseline JPEG;
-    /// 0xa3 (named local RGBA) adds constant or RLE alpha, 0x87 (named JPEG)
-    /// has none.
+    /// Named RGB, RGBA and JPEG images as observed: the format and its options
+    /// in the published single byte at HSF 7.00 and 16.10 and in a 32-bit word
+    /// at 19.00, 19.10 and 20.90; the pixels as a baseline JPEG or, for RGB and
+    /// RGBA, as uncompressed rows. An RGBA image stored as JPEG adds constant
+    /// or RLE alpha.
     U32RgbaJpegV1,
 }
 
@@ -22,8 +24,9 @@ pub struct ImageLayout {
     pub width: u32,
     pub height: u32,
     pub compression: u8,
+    /// The encoded JPEG, or the uncompressed pixel rows (`compression` 0).
     pub data: SourceSpan,
-    /// None for formats without an alpha channel (flags 0x87).
+    /// None unless an RGBA image is stored as JPEG.
     pub alpha_compression: Option<u8>,
     /// One constant byte or encoded RLE; never an expanded pixel allocation.
     pub alpha: Option<SourceSpan>,
@@ -48,14 +51,17 @@ impl Parser<'_> {
             ));
         }
         let version = &self.document.header.version;
-        if !matches!(
-            (version.major, version.minor),
-            (19, 0) | (19, 10) | (20, 90)
-        ) {
-            return Err(unsupported(
-                "The u32 JPEG image profile is limited to HSF 19.00, 19.10 and 20.90",
-            ));
-        }
+        // The format and its options are the published single byte in the
+        // older streams and a 32-bit word in the later ones.
+        let wide = match (version.major, version.minor) {
+            (7, 0) | (16, 10) => false,
+            (19, 0) | (19, 10) | (20, 90) => true,
+            _ => {
+                return Err(unsupported(
+                    "The image profile is limited to HSF 7.00, 16.10, 19.00, 19.10 and 20.90",
+                ));
+            }
+        };
         self.budget.charge_output(1024)?;
         let at = c.pos - 1;
         // 20.90 puts its precision byte between the opcode and the position.
@@ -63,12 +69,15 @@ impl Parser<'_> {
         let from = c.pos;
         let position = c.take(d, 12)?;
         progress::finite(&c.data[from..c.pos], "hsf.nonfinite_image")?;
-        // 0xa3: named (0x80), local texture (0x20), RGBA (3); 0x87: named, JPEG
-        // (7). Only these observed combinations are framed.
-        let format_options = c.u32()?;
-        if !matches!(format_options, 0xa3 | 0x87) {
+        // Named (0x80) images, with or without the local texture flag (0x20),
+        // in the formats RGB (2), RGBA (3) and JPEG (7): 0xa3 and 0x87 are the
+        // common ones. Other formats and options are not framed.
+        let format_options = if wide { c.u32()? } else { u32::from(c.u8()?) };
+        let format = format_options & 0x0f;
+        if format_options & !0xaf != 0 || format_options & 0x80 == 0 || !matches!(format, 2 | 3 | 7)
+        {
             return Err(unsupported(
-                "Only the observed named RGBA and named JPEG image flags are supported",
+                "Only named RGB, RGBA and JPEG images are supported",
             ));
         }
         let n = c.u8()?;
@@ -95,18 +104,35 @@ impl Parser<'_> {
             self.options.max_image_pixels,
             "hsf.limit_image_pixels",
         )?;
+        // The pixels are a JPEG (compression 2) or, for RGB and RGBA,
+        // uncompressed rows (compression 0).
         let compression = c.u8()?;
-        if compression != 2 {
+        if !matches!((format, compression), (2 | 3 | 7, 2) | (2 | 3, 0)) {
             return Err(unsupported(
-                "Only JPEG image payloads are supported by this profile",
+                "Only JPEG payloads, and uncompressed RGB or RGBA rows, are supported",
             ));
         }
-        let n = c.nonnegative()?;
-        let start = c.pos;
-        let data = c.array(d, n, 1)?;
-        jpeg_envelope(&c.data[start..c.pos], width, height)?;
-        // A JPEG-format image ends with its data; RGBA adds the alpha channel.
-        let (alpha_compression, alpha) = if format_options == 0x87 {
+        let data = if compression == 0 {
+            let bytes_per_pixel: u64 = if format == 2 { 3 } else { 4 };
+            // The pixel budget bounds this product well below the u32 range.
+            let length = u32::try_from(pixels * bytes_per_pixel).map_err(|_| {
+                error(
+                    "hsf.limit_array",
+                    Status::LimitExceeded,
+                    "Image payload exceeds the array limit",
+                )
+            })?;
+            c.array(d, length, 1)?
+        } else {
+            let n = c.nonnegative()?;
+            let start = c.pos;
+            let data = c.array(d, n, 1)?;
+            jpeg_envelope(&c.data[start..c.pos], width, height)?;
+            data
+        };
+        // Uncompressed rows, and the JPEG of an RGB or JPEG-format image, end
+        // the record; an RGBA image stored as JPEG adds its alpha channel.
+        let (alpha_compression, alpha) = if format != 3 || compression == 0 {
             (None, None)
         } else {
             let alpha_compression = c.u8()?;
@@ -137,20 +163,26 @@ impl Parser<'_> {
                 Some(b'i'),
                 "hsf.experimental_image",
                 Status::Unsupported,
-                "Image uses an empirical u32-format profile; pixels and placement are not decoded",
+                if wide {
+                    "Image uses an empirical u32-format profile; pixels and placement are not decoded"
+                } else {
+                    "Image uses the byte-format profile; pixels and placement are not decoded"
+                },
             )
             .diagnostic;
         diagnostic.severity = "warning".into();
         diagnostic.impact =
             Some("Syntax continues with an experimental boundary; result remains partial".into());
         self.diagnostics.push(diagnostic);
+        let kind = match (format, compression) {
+            (7, _) => "jpeg_v1",
+            (2, 0) => "rgb_v1",
+            (2, _) => "rgb_jpeg_v1",
+            (_, 0) => "rgba_v1",
+            _ => "rgba_jpeg_v1",
+        };
         Ok(ImageLayout {
-            profile: if format_options == 0x87 {
-                "u32_jpeg_v1"
-            } else {
-                "u32_rgba_jpeg_v1"
-            }
-            .into(),
+            profile: format!("{}_{kind}", if wide { "u32" } else { "byte" }),
             position,
             format_options,
             name,

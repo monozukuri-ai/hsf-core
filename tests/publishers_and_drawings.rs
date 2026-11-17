@@ -246,9 +246,26 @@ fn named_jpeg_images_end_with_their_data() {
         assert_eq!(s.data.images[0].alpha_source, None);
         assert!(!s.data.images[0].implicit_texture_local);
     }
+    // RGBA without the local texture flag carries its alpha the same way, and
+    // an RGB image stored as JPEG has none.
+    let body = [image(0x83, &[0, 255]), image(0xa2, &[]), vec![0]].concat();
+    let p = parsed_with(&body, "19.10", options(ParseMode::Partial)).unwrap();
+    assert!(p.unparsed.is_empty());
+    let rgba = p.data.records[0].image().unwrap();
+    assert_eq!(rgba.profile, "u32_rgba_jpeg_v1");
+    assert_eq!(rgba.alpha_compression, Some(0));
+    let rgb = p.data.records[1].image().unwrap();
+    assert_eq!(rgb.profile, "u32_rgb_jpeg_v1");
+    assert_eq!((rgb.alpha_compression, rgb.alpha.as_ref()), (None, None));
+    let s = scene_of(&p);
+    assert!(!s.data.images[0].implicit_texture_local);
+    assert!(s.data.images[1].implicit_texture_local);
     for (body, version, expected) in [
         (image(0x87, &[]), "18.00", "hsf.image_profile"),
-        (image(0x83, &[]), "19.10", "hsf.image_profile"),
+        // BGRA, an unnamed image and an unknown option bit.
+        (image(0x84, &[]), "19.10", "hsf.image_profile"),
+        (image(0x07, &[]), "19.10", "hsf.image_profile"),
+        (image(0x187, &[]), "19.10", "hsf.image_profile"),
     ] {
         let p = parsed_with(
             &[body, vec![0]].concat(),

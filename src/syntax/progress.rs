@@ -476,18 +476,28 @@ impl Parser<'_> {
                 } else {
                     0
                 };
-                if (opcode == 1 && ![1, 7].contains(&scheme)) || (opcode == 3 && scheme != 1) {
+                let version = (
+                    self.document.header.version.major,
+                    self.document.header.version.minor,
+                );
+                // Normals: 1 is trivial (three codes), 7 trivial polar (two) and
+                // 3 a code per vertex into the published table of unit vectors.
+                // The packing of 3 is verified for HSF 7.00 only.
+                let table_codes = opcode == 1 && scheme == 3 && version == (7, 0);
+                if (opcode == 1 && ![1, 7].contains(&scheme) && !table_codes)
+                    || (opcode == 3 && scheme != 1)
+                {
                     return Err(unsupported(
                         "hsf.shell_attribute_compression",
                         "Unknown attribute compression scheme",
                     ));
                 }
-                let version = (
-                    self.document.header.version.major,
-                    self.document.header.version.minor,
-                );
                 let width = if opcode == 1 {
-                    if scheme == 7 { 2 } else { 3 }
+                    match scheme {
+                        7 => 2,
+                        3 => 1,
+                        _ => 3,
+                    }
                 } else if opcode == 3 && version < (11, 75) {
                     3
                 } else {
@@ -541,6 +551,12 @@ impl Parser<'_> {
                             "Attribute bit width must be 2..31",
                         ));
                     }
+                    if table_codes && ![8, 10].contains(&bits) {
+                        return Err(unsupported(
+                            "hsf.shell_attribute_bits",
+                            "Table-coded normals are defined for 8 and 10 bits",
+                        ));
+                    }
                     let at = c.pos;
                     let length = c.nonnegative()?;
                     fields.push(OperandField {
@@ -548,7 +564,13 @@ impl Parser<'_> {
                         encoding: "i32_le".into(),
                         source: span(d, at, 4),
                     });
-                    if u64::from(length) != packed_length(count, width, bits) {
+                    // Table codes are packed to the byte, not to 32-bit words.
+                    let expected = if table_codes {
+                        (u64::from(count) * u64::from(bits)).div_ceil(8)
+                    } else {
+                        packed_length(count, width, bits)
+                    };
+                    if u64::from(length) != expected {
                         return Err(error(
                             "hsf.invalid_shell_attribute_length",
                             Status::Invalid,
@@ -558,7 +580,12 @@ impl Parser<'_> {
                     let source = c.array(d, length, 1)?;
                     fields.push(OperandField {
                         name: if opcode == 1 { "normals" } else { "parameters" }.into(),
-                        encoding: "packed".into(),
+                        encoding: if table_codes {
+                            "packed_table_codes"
+                        } else {
+                            "packed"
+                        }
+                        .into(),
                         source,
                     });
                 }
