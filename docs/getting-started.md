@@ -7,7 +7,7 @@ crates.io, add:
 
 ```toml
 [dependencies]
-hsf-core = "0.1.0"
+hsf-core = "0.1.1"
 ```
 
 To use a local source checkout before publication or during development, replace
