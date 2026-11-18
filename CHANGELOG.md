@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+Records
+
+- A polygon (`G`) that stores fewer than three points no longer stops a partial
+  parse. The record boundary does not depend on the point count, so the record
+  is kept as stored, the following records are framed as before, and the parse
+  reports the warning `hsf.degenerate_polygon`. The scene keeps the primitive
+  with its zero, one or two points; it encloses no area. Strict mode still
+  rejects it with `hsf.polygon_point_count`.
+
 ## 0.1.0 (contract 38)
 
 HSF 7.00 streams, as early eDrawings writers produced them, and HSF 16.10 have

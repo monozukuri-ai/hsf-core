@@ -1351,6 +1351,7 @@ impl Parser<'_> {
         d: usize,
         c: &mut Cursor<'_>,
     ) -> Result<PrimitiveLayout, HsfError> {
+        let count_at = c.pos;
         let point_count = match op {
             b'l' => 2,
             b'L' | b'G' => c.nonnegative()?,
@@ -1358,11 +1359,29 @@ impl Parser<'_> {
             _ => 1,
         };
         if op == b'G' && point_count < 3 {
-            return Err(error(
-                "hsf.polygon_point_count",
-                Status::Invalid,
-                "Polygon requires at least three stored points",
-            ));
+            if self.options.mode == ParseMode::Strict {
+                return Err(error(
+                    "hsf.polygon_point_count",
+                    Status::Invalid,
+                    "Polygon requires at least three stored points",
+                ));
+            }
+            // The record boundary does not depend on the count (count, then that many
+            // points), so framing stays exact. Writers do store polygons with zero to two
+            // points; they enclose no area. Keep the record as stored and continue.
+            let mut diagnostic = *self
+                .fail(
+                    d,
+                    count_at,
+                    Some(op),
+                    "hsf.degenerate_polygon",
+                    Status::Invalid,
+                    "Polygon stores fewer than three points; it is retained as stored and encloses no area",
+                )
+                .diagnostic;
+            diagnostic.severity = "warning".into();
+            diagnostic.impact = Some("Syntax continues; the polygon draws nothing".into());
+            self.diagnostics.push(diagnostic);
         }
         charge(
             &mut self.vertices,

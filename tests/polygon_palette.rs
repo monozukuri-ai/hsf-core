@@ -69,6 +69,44 @@ fn polygon_order_closure_identity_and_versions() {
         );
     }
 }
+fn short_polygon(points: i32) -> Vec<u8> {
+    let mut b = vec![b'G'];
+    b.extend(points.to_le_bytes());
+    for index in 0..points * 3 {
+        b.extend((index as f32).to_le_bytes());
+    }
+    b
+}
+#[test]
+fn polygons_with_fewer_than_three_points_do_not_stop_a_partial_parse() {
+    // Writers store polygons with zero, one or two points. The record boundary does
+    // not depend on the count, so the following records are still framed exactly.
+    for points in 0..3 {
+        let b = [short_polygon(points), polygon(), vec![0]].concat();
+        let e = parsed(&b, ParseMode::Strict).unwrap_err();
+        assert_eq!(e.diagnostic.code, "hsf.polygon_point_count");
+        assert_eq!(e.diagnostic.classification, Status::Invalid);
+
+        let p = parsed(&b, ParseMode::Partial).unwrap();
+        assert_eq!(p.diagnostics.len(), 1);
+        assert_eq!(p.diagnostics[0].code, "hsf.degenerate_polygon");
+        assert_eq!(p.diagnostics[0].severity, "warning");
+        assert!(p.unparsed.is_empty());
+        let kinds: Vec<&str> = p.data.records.iter().map(|r| r.kind.as_ref()).collect();
+        assert_eq!(&kinds[..2], ["polygon", "polygon"]);
+
+        let s = scene(
+            &p,
+            &SceneOptions::default(),
+            &mut Budget::new(Limits::default()),
+        )
+        .unwrap();
+        assert_eq!(s.data.primitives.len(), 2);
+        assert_eq!(s.data.primitives[0].point_count, points as u32);
+        assert_eq!(s.data.primitives[0].points.len(), points as usize);
+        assert_eq!(s.data.primitives[1].point_count, 5);
+    }
+}
 #[test]
 fn palette_framing_is_distinct_from_scene_interpretation() {
     let b = [palette(), polygon(), vec![0]].concat();
@@ -112,7 +150,8 @@ fn cuts_and_invalid_numbers_never_turn_into_partial_success() {
             }
         }
     }
-    for n in [-1i32, 0, 1, 2] {
+    // A negative count, and a count whose points are missing, stay invalid.
+    for n in [-1i32, 1, 2] {
         let b = [vec![b'G'], n.to_le_bytes().to_vec(), vec![0]].concat();
         assert_eq!(
             parsed(&b, ParseMode::Partial)
